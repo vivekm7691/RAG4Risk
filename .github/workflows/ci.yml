@@ -286,8 +286,8 @@ jobs:
           # Wait for Chroma (vector DB) - typically runs on port 8000 or separate port
           elapsed=0
           while [ $elapsed -lt $timeout ]; do
-            if curl -f http://localhost:8000/api/v1/heartbeat > /dev/null 2>&1 || \
-               curl -f http://localhost:8001/api/v1/heartbeat > /dev/null 2>&1; then
+            if curl -f http://localhost:8000/api/v2/heartbeat > /dev/null 2>&1 || \
+               curl -f http://localhost:8001/api/v2/heartbeat > /dev/null 2>&1; then
               echo "Chroma is ready!"
               break
             fi
