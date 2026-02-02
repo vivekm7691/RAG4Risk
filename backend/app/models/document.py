@@ -11,6 +11,8 @@ class DocumentType(str, Enum):
     STATEMENT_OF_WORK = "statement of work"
     SOLUTION_DESCRIPTION = "solution description document"
     PROPOSAL = "proposal document"
+    RISK_REGISTER = "risk register"
+    ISSUE_LOG = "issue log"
 
 
 class DocumentUpload(BaseModel):
