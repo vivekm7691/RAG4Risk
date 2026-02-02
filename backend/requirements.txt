@@ -11,8 +11,13 @@ pydantic-settings>=2.1.0
 
 # Document processing
 python-docx>=1.1.0
+pandas>=2.1.0
+openpyxl>=3.1.0
 
 # Embeddings and vector database
+# Note: PyTorch CPU-only is installed in Dockerfile to avoid NVIDIA GPU libraries
+# (cuDNN, NCCL, cuSPARSELt) - see Dockerfile for CPU-only installation
+# torch is installed separately in Dockerfile before this requirements.txt
 sentence-transformers>=2.2.2
 chromadb>=0.4.18
 

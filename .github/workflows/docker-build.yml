@@ -5,9 +5,7 @@ on:
     workflows: ["CI Pipeline"]
     types:
       - completed
-    branches: [ main, develop ]
   workflow_dispatch:
-    branches: [ main, develop ]
 
 jobs:
   docker-build:
@@ -82,10 +80,12 @@ jobs:
           platforms: linux/amd64
       
       - name: Image digest backend
-        run: echo "Backend image digest: ${{ steps.build-backend.outputs.digest }}"
+        run: |
+          echo "Backend image digest: ${{ steps.build-backend.outputs.digest }}"
       
       - name: Image digest frontend
-        run: echo "Frontend image digest: ${{ steps.build-frontend.outputs.digest }}"
+        run: |
+          echo "Frontend image digest: ${{ steps.build-frontend.outputs.digest }}"
       
       - name: Summary
         run: |
