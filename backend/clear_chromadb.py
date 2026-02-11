@@ -1,4 +1,8 @@
-"""Script to clear ChromaDB collection for testing"""
+"""Script to clear Qdrant collection for testing
+
+NOTE: This script needs to be updated to use async VectorStore methods.
+It currently uses synchronous code which won't work with the new Qdrant implementation.
+"""
 
 import sys
 from pathlib import Path

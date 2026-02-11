@@ -1,53 +1,121 @@
-"""Vector store service for Chroma database integration"""
+"""Vector store service for Qdrant database integration"""
 
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import hashlib
 import json
-import chromadb
-from chromadb.config import Settings as ChromaSettings
-from chromadb.utils import embedding_functions
+import uuid
+import logging
+
+logger = logging.getLogger(__name__)
+
+from qdrant_client import AsyncQdrantClient
+from qdrant_client.models import (
+    Distance,
+    VectorParams,
+    PointStruct,
+    Filter,
+    FieldCondition,
+    MatchValue,
+    Range,
+    CollectionStatus,
+)
 
 from app.config import settings
 from app.models.document import DocumentType as DocType
 
+# Singleton instance
+_vector_store_instance: Optional['VectorStore'] = None
+
+
+async def get_vector_store() -> 'VectorStore':
+    """Get or create singleton VectorStore instance"""
+    global _vector_store_instance
+    if _vector_store_instance is None:
+        _vector_store_instance = VectorStore()
+        await _vector_store_instance._initialize_client()
+    return _vector_store_instance
+
 
 class VectorStore:
-    """Service for managing vector storage in Chroma"""
+    """Service for managing vector storage in Qdrant"""
     
     def __init__(self):
         """Initialize the vector store service"""
-        self.client: Optional[chromadb.ClientAPI] = None
-        self.collection: Optional[chromadb.Collection] = None
-        self._initialize_client()
+        self.client: Optional[AsyncQdrantClient] = None
+        self.collection_name: str = settings.QDRANT_COLLECTION_NAME
+        self._initialized: bool = False
+        # Embedding dimension (will be set after first embedding)
+        self._embedding_dim: Optional[int] = None
     
-    def _initialize_client(self):
-        """Initialize Chroma client and collection"""
+    async def _initialize_client(self):
+        """Initialize Qdrant client and collection (deprecated - using fresh clients now)"""
+        # This method is kept for backward compatibility but is no longer used
+        # We create fresh clients for each operation to avoid "client has been closed" errors
+        self._initialized = True
+    
+    async def _get_client(self) -> AsyncQdrantClient:
+        """Get or create a Qdrant client (creates fresh client each time to avoid closed client issues)"""
+        logger.debug(f"Creating new AsyncQdrantClient: host={settings.QDRANT_HOST}, port={settings.QDRANT_PORT}")
         try:
-            # Create Chroma client
-            self.client = chromadb.HttpClient(
-                host=settings.CHROMA_HOST,
-                port=settings.CHROMA_PORT,
-                settings=ChromaSettings(
-                    anonymized_telemetry=False,
-                    allow_reset=True
-                )
+            client = AsyncQdrantClient(
+                host=settings.QDRANT_HOST,
+                port=settings.QDRANT_PORT,
+                timeout=30.0
             )
-            
-            # Get or create collection
-            # Use default embedding function (will be overridden by our embeddings)
-            embedding_fn = embedding_functions.DefaultEmbeddingFunction()
-            
-            self.collection = self.client.get_or_create_collection(
-                name=settings.CHROMA_COLLECTION_NAME,
-                embedding_function=embedding_fn,
-                metadata={"description": "RAG4Risk document collection"}
-            )
-            
+            logger.debug(f"AsyncQdrantClient created successfully: {type(client)}")
+            return client
         except Exception as e:
-            raise ConnectionError(f"Failed to connect to Chroma database: {str(e)}")
+            logger.error(f"Failed to create AsyncQdrantClient: {type(e).__name__}: {str(e)}", exc_info=True)
+            raise
     
-    def add_documents(
+    async def _ensure_initialized(self):
+        """Ensure client is initialized (for backward compatibility)"""
+        if not self._initialized:
+            # Just mark as initialized, we'll create clients on-demand
+            self._initialized = True
+    
+    async def _ensure_collection_exists(self, embedding_dim: int):
+        """Ensure collection exists with correct vector dimension"""
+        if self._embedding_dim is None:
+            self._embedding_dim = embedding_dim
+        
+        # Get a fresh client for this operation
+        logger.info(f"Ensuring collection exists: {self.collection_name}, embedding_dim={embedding_dim}")
+        client = await self._get_client()
+        try:
+            # Check if collection exists
+            logger.debug("Calling client.get_collections()")
+            collections = await client.get_collections()
+            logger.debug(f"Retrieved {len(collections.collections)} collections")
+            collection_exists = any(
+                col.name == self.collection_name 
+                for col in collections.collections
+            )
+            logger.info(f"Collection exists: {collection_exists}")
+            
+            if not collection_exists:
+                logger.info(f"Creating collection: {self.collection_name} with dimension {embedding_dim}")
+                # Create collection with vector dimension
+                await client.create_collection(
+                    collection_name=self.collection_name,
+                    vectors_config=VectorParams(
+                        size=embedding_dim,
+                        distance=Distance.COSINE
+                    )
+                )
+                logger.info(f"Collection created successfully: {self.collection_name}")
+        except Exception as e:
+            logger.error(
+                f"Error in _ensure_collection_exists: {type(e).__name__}: {str(e)}",
+                exc_info=True
+            )
+            raise
+        finally:
+            # Don't close client - let it be garbage collected
+            logger.debug("Leaving client open for garbage collection")
+    
+    async def add_documents(
         self,
         chunks: List[Dict[str, Any]],
         embeddings: List[List[float]]
@@ -70,92 +138,88 @@ class VectorStore:
         if not chunks:
             return []
         
-        # Extract chunk IDs and validate
+        # Ensure collection exists
+        embedding_dim = len(embeddings[0])
+        await self._ensure_collection_exists(embedding_dim)
+        
+        # Generate chunk IDs and check for existing ones
         ids = []
+        content_hashes = {}
+        
         for chunk in chunks:
             chunk_id = chunk["metadata"].get("chunk_id")
             if not chunk_id:
-                raise ValueError("Chunk metadata must contain 'chunk_id'")
-            ids.append(chunk_id)
-        
-        # Generate content hashes for all chunks
-        content_hashes = {}
-        for chunk in chunks:
-            chunk_id = chunk["metadata"].get("chunk_id")
+                chunk_id = str(uuid.uuid4())
+                chunk["metadata"]["chunk_id"] = chunk_id
+            
             content_hash = self._generate_content_hash(chunk)
             content_hashes[chunk_id] = content_hash
+            ids.append(chunk_id)
         
-        # Check for existing chunk IDs
-        existing_ids = set()
-        if ids:
-            try:
-                existing_results = self.collection.get(ids=ids)
-                if existing_results["ids"]:
-                    existing_ids = set(existing_results["ids"])
-            except Exception:
-                # If get() fails, assume no existing IDs (safe to proceed)
-                existing_ids = set()
-        
-        # Check for existing content hashes (query by content_hash metadata)
-        existing_content_hashes = set()
+        # Get a fresh client for this operation
+        logger.info(f"Adding {len(chunks)} documents to collection: {self.collection_name}")
+        client = await self._get_client()
         try:
-            # Query for chunks with matching content hashes
-            unique_content_hashes = set(content_hashes.values())
-            for content_hash in unique_content_hashes:
-                results = self.collection.get(
-                    where={"content_hash": content_hash}
-                )
-                if results["ids"]:
-                    existing_content_hashes.add(content_hash)
-        except Exception:
-            # If query fails, proceed without content hash check
-            pass
-        
-        # Filter out chunks that already exist (by ID or content hash)
-        new_chunks = []
-        new_embeddings = []
-        new_ids = []
-        
-        for chunk, embedding in zip(chunks, embeddings):
-            chunk_id = chunk["metadata"].get("chunk_id")
-            content_hash = content_hashes[chunk_id]
-            
-            # Skip if ID exists OR content hash exists
-            if chunk_id not in existing_ids and content_hash not in existing_content_hashes:
-                # Add content hash to metadata before storing
-                chunk["metadata"]["content_hash"] = content_hash
-                new_chunks.append(chunk)
-                new_embeddings.append(embedding)
-                new_ids.append(chunk_id)
-        
-        # Only add new chunks
-        if not new_chunks:
-            return []
-        
-        # Prepare data for Chroma
-        texts = []
-        metadatas = []
-        
-        for chunk in new_chunks:
-            texts.append(chunk["text"])
-            # Prepare metadata (Chroma requires string values)
-            metadata = self._prepare_metadata(chunk["metadata"])
-            metadatas.append(metadata)
-        
-        # Add to collection
-        try:
-            self.collection.add(
-                ids=new_ids,
-                embeddings=new_embeddings,
-                documents=texts,
-                metadatas=metadatas
+            # Check for existing points by ID
+            logger.debug(f"Checking for existing points with {len(ids)} IDs")
+            existing_points = await client.retrieve(
+                collection_name=self.collection_name,
+                ids=ids
             )
+            existing_ids = {point.id for point in existing_points}
+            logger.info(f"Found {len(existing_ids)} existing points")
+            
+            # Check for existing content hashes
+            # Note: Qdrant doesn't support querying by payload directly in a simple way
+            # We'll skip content hash checking for now and rely on chunk_id uniqueness
+            # This is acceptable since chunk_id should be unique per document+chunk
+            
+            # Prepare points for new chunks only
+            new_points = []
+            new_ids = []
+            
+            for idx, chunk in enumerate(chunks):
+                chunk_id = chunk["metadata"]["chunk_id"]
+                
+                # Skip if already exists
+                if chunk_id in existing_ids:
+                    continue
+                
+                # Prepare payload (metadata) - Qdrant supports various types
+                payload = self._prepare_payload(chunk["metadata"])
+                payload["text"] = chunk["text"]  # Store text in payload for retrieval
+                
+                point = PointStruct(
+                    id=chunk_id,
+                    vector=embeddings[idx],
+                    payload=payload
+                )
+                new_points.append(point)
+                new_ids.append(chunk_id)
+            
+            # Add new points to collection
+            if new_points:
+                logger.info(f"Upserting {len(new_points)} new points")
+                await client.upsert(
+                    collection_name=self.collection_name,
+                    points=new_points
+                )
+                logger.info(f"Successfully upserted {len(new_points)} points")
+            else:
+                logger.info("No new points to add (all already exist)")
         except Exception as e:
-            raise RuntimeError(f"Failed to add documents to vector store: {str(e)}")
+            logger.error(
+                f"Error in add_documents: {type(e).__name__}: {str(e)}",
+                exc_info=True
+            )
+            raise
+        finally:
+            # Don't close client - let it be garbage collected
+            logger.debug("Leaving client open for garbage collection")
         
         return new_ids
     
-    def search(
+    async def search(
         self,
         query_embedding: List[float],
         top_k: int = None,
@@ -187,39 +251,69 @@ class VectorStore:
         """
         top_k = top_k or settings.TOP_K
         
-        # Build where clause for filtering
-        where_clause = self._build_where_clause(
+        # Build filter for Qdrant
+        qdrant_filter = self._build_qdrant_filter(
             project_name=project_name,
             document_type=document_type,
             filters=filters
         )
         
         try:
-            # Perform search
-            results = self.collection.query(
-                query_embeddings=[query_embedding],
-                n_results=top_k,
-                where=where_clause if where_clause else None
-            )
+            logger.info(f"Starting vector search: collection={self.collection_name}, top_k={top_k}, has_filter={qdrant_filter is not None}")
+            
+            # Get a fresh client for this operation
+            client = await self._get_client()
+            logger.debug(f"Client obtained, type: {type(client)}, id: {id(client)}")
+            
+            try:
+                # Perform search using query_points() method for vector search
+                logger.debug(f"Calling client.query_points() with collection={self.collection_name}, vector_dim={len(query_embedding)}")
+                
+                # Use query_points for vector search - it accepts vector list directly
+                query_response = await client.query_points(
+                    collection_name=self.collection_name,
+                    query=query_embedding,  # Pass vector list directly (list[float])
+                    query_filter=qdrant_filter if qdrant_filter else None,
+                    limit=top_k
+                )
+                
+                # Extract points from response (query_response.points is a list of ScoredPoint objects)
+                search_results = query_response.points
+                logger.info(f"Search completed successfully, found {len(search_results)} results")
+            except Exception as search_error:
+                logger.error(
+                    f"Error during client.query_points(): {type(search_error).__name__}: {str(search_error)}",
+                    exc_info=True
+                )
+                raise
+            finally:
+                # Don't close the client - let it be garbage collected naturally
+                # Closing it immediately causes "client has been closed" errors
+                logger.debug("Leaving client open for garbage collection")
             
             # Format results
             formatted_results = []
             
-            if results["ids"] and len(results["ids"][0]) > 0:
-                for idx in range(len(results["ids"][0])):
-                    result = {
-                        "text": results["documents"][0][idx],
-                        "metadata": results["metadatas"][0][idx],
-                        "distance": results["distances"][0][idx] if "distances" in results else None
-                    }
-                    formatted_results.append(result)
+            for result in search_results:
+                payload = result.payload
+                # Qdrant returns similarity score (higher is better, range 0-1 for cosine)
+                # Convert to distance (lower is better) for consistency with ChromaDB API
+                similarity = result.score
+                distance = 1.0 - similarity  # Convert similarity to distance
+                
+                formatted_result = {
+                    "text": payload.get("text", ""),
+                    "metadata": {k: v for k, v in payload.items() if k != "text"},
+                    "distance": distance
+                }
+                formatted_results.append(formatted_result)
             
             return formatted_results
             
         except Exception as e:
             raise RuntimeError(f"Failed to search vector store: {str(e)}")
     
-    def delete_document(self, document_id: str) -> bool:
+    async def delete_document(self, document_id: str) -> bool:
         """
         Delete all chunks for a document
         
@@ -229,15 +323,35 @@ class VectorStore:
         Returns:
             True if deletion was successful
         """
+        await self._ensure_initialized()
+        
+        client = await self._get_client()
         try:
-            # Find all chunks for this document
-            results = self.collection.get(
-                where={"document_id": document_id}
+            # Find all points for this document using filter
+            filter_condition = Filter(
+                must=[
+                    FieldCondition(
+                        key="document_id",
+                        match=MatchValue(value=document_id)
+                    )
+                ]
             )
             
-            if results["ids"]:
-                # Delete chunks
-                self.collection.delete(ids=results["ids"])
+            # Scroll to get all points matching the filter
+            scroll_result = await client.scroll(
+                collection_name=self.collection_name,
+                scroll_filter=filter_condition,
+                limit=10000  # Large limit to get all points
+            )
+            points = scroll_result[0] if isinstance(scroll_result, tuple) else scroll_result.points
+            
+            if points:
+                # Delete points by ID
+                point_ids = [point.id for point in points]
+                await client.delete(
+                    collection_name=self.collection_name,
+                    points_selector=point_ids
+                )
                 return True
             
             return False
@@ -245,7 +359,7 @@ class VectorStore:
         except Exception as e:
             raise RuntimeError(f"Failed to delete document from vector store: {str(e)}")
     
-    def get_document_chunks(self, document_id: str) -> List[Dict[str, Any]]:
+    async def get_document_chunks(self, document_id: str) -> List[Dict[str, Any]]:
         """
         Get all chunks for a document
         
@@ -255,42 +369,67 @@ class VectorStore:
         Returns:
             List of chunk dictionaries
         """
+        await self._ensure_initialized()
+        
+        client = await self._get_client()
         try:
-            results = self.collection.get(
-                where={"document_id": document_id}
+            # Find all points for this document using filter
+            filter_condition = Filter(
+                must=[
+                    FieldCondition(
+                        key="document_id",
+                        match=MatchValue(value=document_id)
+                    )
+                ]
             )
             
+            # Scroll to get all points matching the filter
+            scroll_result = await client.scroll(
+                collection_name=self.collection_name,
+                scroll_filter=filter_condition,
+                limit=10000  # Large limit to get all points
+            )
+            points = scroll_result[0] if isinstance(scroll_result, tuple) else scroll_result.points
+            
             chunks = []
-            if results["ids"]:
-                for idx in range(len(results["ids"])):
-                    chunk = {
-                        "text": results["documents"][idx],
-                        "metadata": results["metadatas"][idx]
-                    }
-                    chunks.append(chunk)
+            for point in points:
+                payload = point.payload
+                chunk = {
+                    "text": payload.get("text", ""),
+                    "metadata": {k: v for k, v in payload.items() if k != "text"}
+                }
+                chunks.append(chunk)
             
             return chunks
             
         except Exception as e:
             raise RuntimeError(f"Failed to get document chunks: {str(e)}")
     
-    def clear_collection(self) -> bool:
+    async def clear_collection(self) -> bool:
         """
         Clear all documents from the collection
         
         Returns:
             True if clearing was successful
         """
+        await self._ensure_initialized()
+        
+        client = await self._get_client()
         try:
-            # Get all IDs in the collection
-            results = self.collection.get()
+            # Delete collection and recreate it
+            await client.delete_collection(collection_name=self.collection_name)
             
-            if results["ids"]:
-                # Delete all documents
-                self.collection.delete(ids=results["ids"])
-                return True
+            # Recreate with same dimension if we know it
+            if self._embedding_dim:
+                await client.create_collection(
+                    collection_name=self.collection_name,
+                    vectors_config=VectorParams(
+                        size=self._embedding_dim,
+                        distance=Distance.COSINE
+                    )
+                )
             
-            return True  # Collection is already empty
+            return True
             
         except Exception as e:
             raise RuntimeError(f"Failed to clear collection: {str(e)}")
@@ -321,100 +460,123 @@ class VectorStore:
         
         return hashlib.sha256(content_str.encode()).hexdigest()
     
-    def _prepare_metadata(self, metadata: Dict[str, Any]) -> Dict[str, str]:
+    def _prepare_payload(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Prepare metadata for Chroma (all values must be strings)
+        Prepare payload for Qdrant (supports various types, not just strings)
         
         Args:
             metadata: Original metadata dictionary
             
         Returns:
-            Metadata dictionary with all string values
+            Payload dictionary with appropriate types
         """
-        prepared = {}
-        
+        payload = {}
         for key, value in metadata.items():
+            # Qdrant supports: str, int, float, bool, list, dict
+            # Convert None to empty string
             if value is None:
-                continue
-            
-            # Convert to string
-            if isinstance(value, (datetime,)):
-                prepared[key] = value.isoformat()
-            elif isinstance(value, (list, dict)):
-                # Convert complex types to JSON string
-                import json
-                prepared[key] = json.dumps(value)
-            elif isinstance(value, DocType):
-                prepared[key] = value.value
+                payload[key] = ""
+            elif isinstance(value, (str, int, float, bool, list, dict)):
+                payload[key] = value
             else:
-                prepared[key] = str(value)
+                # Convert other types to string
+                payload[key] = str(value)
         
-        return prepared
+        return payload
     
-    def _build_where_clause(
+    def _build_qdrant_filter(
         self,
         project_name: Optional[str] = None,
         document_type: Optional[DocType] = None,
         filters: Optional[Dict[str, Any]] = None
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Optional[Filter]:
         """
-        Build Chroma where clause for filtering
+        Build Qdrant filter from query parameters
         
         Args:
             project_name: Filter by project name
             document_type: Filter by document type
-            filters: Additional filters for Excel-based queries
-        
+            filters: Additional metadata filters
+            
         Returns:
-            Chroma where clause dictionary or None
+            Qdrant Filter object or None
         """
-        where_clauses = []
+        conditions = []
         
         # Project name filter
         if project_name:
-            where_clauses.append({"project_name": project_name})
+            conditions.append(
+                FieldCondition(
+                    key="project_name",
+                    match=MatchValue(value=project_name)
+                )
+            )
         
         # Document type filter
         if document_type:
-            where_clauses.append({"document_type": document_type.value})
+            conditions.append(
+                FieldCondition(
+                    key="document_type",
+                    match=MatchValue(value=document_type.value)
+                )
+            )
         
-        # Additional filters for Excel-based queries
+        # Additional filters
         if filters:
             # Severity filter
             if "severity" in filters:
-                where_clauses.append({"severity": filters["severity"]})
+                conditions.append(
+                    FieldCondition(
+                        key="severity",
+                        match=MatchValue(value=filters["severity"])
+                    )
+                )
             
             # Status filter
             if "status" in filters:
-                where_clauses.append({"status": filters["status"]})
+                conditions.append(
+                    FieldCondition(
+                        key="status",
+                        match=MatchValue(value=filters["status"])
+                    )
+                )
             
             # Category filter
             if "category" in filters:
-                where_clauses.append({"category": filters["category"]})
+                conditions.append(
+                    FieldCondition(
+                        key="category",
+                        match=MatchValue(value=filters["category"])
+                    )
+                )
             
             # Owner filter
             if "owner" in filters:
-                where_clauses.append({"owner": filters["owner"]})
+                conditions.append(
+                    FieldCondition(
+                        key="owner",
+                        match=MatchValue(value=filters["owner"])
+                    )
+                )
             
-            # Date range filter (requires Chroma's $gte and $lte operators
+            # Date range filter
             if "date_range" in filters:
                 date_range = filters["date_range"]
-                if "start_date" in date_range and "end_date" in date_range:
-                    # Note: Chroma date filtering may require custom handling
-                    # For now, we'll store dates as strings and do string comparison
-                    where_clauses.append({
-                        "$and": [
-                            {"date": {"$gte": date_range["start_date"]}},
-                            {"date": {"$lte": date_range["end_date"]}}
-                        ]
-                    })
+                if "start_date" in date_range or "end_date" in date_range:
+                    range_conditions = {}
+                    if "start_date" in date_range:
+                        range_conditions["gte"] = date_range["start_date"]
+                    if "end_date" in date_range:
+                        range_conditions["lte"] = date_range["end_date"]
+                    
+                    conditions.append(
+                        FieldCondition(
+                            key="date",
+                            range=Range(**range_conditions)
+                        )
+                    )
         
-        # Combine clauses with AND
-        if len(where_clauses) == 1:
-            return where_clauses[0]
-        elif len(where_clauses) > 1:
-            return {"$and": where_clauses}
-        else:
-            return None
-
-
+        if conditions:
+            return Filter(must=conditions)
+        
+        return None

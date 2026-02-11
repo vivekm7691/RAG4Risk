@@ -1,5 +1,6 @@
 """Chunking service for documents - semantic chunking for Word, row-based for Excel"""
 
+import uuid
 from typing import List, Dict, Any, Optional
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
@@ -59,7 +60,8 @@ class Chunker:
         chunks = []
         
         for idx, row in enumerate(rows):
-            chunk_id = f"{document_metadata.get('document_id', 'doc')}_chunk_{idx}"
+            # Generate a UUID for each chunk (Qdrant requires UUID or integer, not string with suffix)
+            chunk_id = str(uuid.uuid4())
             
             # Combine row metadata with document metadata
             chunk_metadata = {
@@ -100,7 +102,8 @@ class Chunker:
         # Convert to our format with metadata
         result_chunks = []
         for idx, chunk_text in enumerate(chunks):
-            chunk_id = f"{metadata.get('document_id', 'doc')}_chunk_{idx}"
+            # Generate a UUID for each chunk (Qdrant requires UUID or integer, not string with suffix)
+            chunk_id = str(uuid.uuid4())
             
             chunk_metadata = {
                 **metadata,

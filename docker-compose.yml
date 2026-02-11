@@ -3,24 +3,32 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      args:
+        SKIP_MODEL_DOWNLOAD: ${SKIP_MODEL_DOWNLOAD:-false}
     container_name: rag4risk-backend
     ports:
       - "8000:8000"
     environment:
-      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://ollama:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2:3b}
+      - OLLAMA_TIMEOUT=${OLLAMA_TIMEOUT:-300.0}
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-all-MiniLM-L6-v2}
-      - CHROMA_HOST=chroma
-      - CHROMA_PORT=8000
-      - CHROMA_COLLECTION_NAME=${CHROMA_COLLECTION_NAME:-rag4risk_documents}
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - QDRANT_COLLECTION_NAME=${QDRANT_COLLECTION_NAME:-rag4risk_documents}
       - CHUNK_SIZE=${CHUNK_SIZE:-1000}
       - CHUNK_OVERLAP=${CHUNK_OVERLAP:-200}
       - TOP_K=${TOP_K:-5}
+      # SSL Configuration for HuggingFace model downloads
+      # Set HF_HUB_DISABLE_SSL_VERIFY=true if you have corporate proxy with self-signed certificates
+      - HF_HUB_DISABLE_SSL_VERIFY=${HF_HUB_DISABLE_SSL_VERIFY:-false}
     volumes:
       - ./backend:/app
       - backend_data:/app/data
+      - huggingface_cache:/root/.cache/huggingface  # Persist HuggingFace model cache
     depends_on:
-      - chroma
+      - qdrant
+      - ollama
     networks:
       - rag4risk-network
     restart: unless-stopped
@@ -43,47 +51,44 @@ services:
       - rag4risk-network
     restart: unless-stopped
 
-  chroma:
-    image: chromadb/chroma:latest
-    container_name: rag4risk-chroma
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: rag4risk-qdrant
     ports:
-      - "8001:8000"
-    environment:
-      - IS_PERSISTENT=TRUE
-      - ANONYMIZED_TELEMETRY=FALSE
+      - "6333:6333"
+      - "6334:6334"
     volumes:
-      - chroma_data:/chroma/chroma
+      - qdrant_data:/qdrant/storage
     networks:
       - rag4risk-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v2/heartbeat"]
+      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
 
-  # Ollama service (optional - for production)
-  # Uncomment if you want to run Ollama in Docker instead of on host
-  # ollama:
-  #   image: ollama/ollama:latest
-  #   container_name: rag4risk-ollama
-  #   ports:
-  #     - "11434:11434"
-  #   volumes:
-  #     - ollama_data:/root/.ollama
-  #   networks:
-  #     - rag4risk-network
-  #   restart: unless-stopped
-  #   deploy:
-  #     resources:
-  #       reservations:
-  #         memory: 8G
+  ollama:
+    image: ollama/ollama:latest
+    container_name: rag4risk-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - rag4risk-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          memory: 8G
 
 volumes:
   backend_data:
-  chroma_data:
-  # ollama_data:  # Uncomment if using Ollama container
+  qdrant_data:
+  ollama_data:
+  huggingface_cache:  # Persist HuggingFace model cache to avoid re-downloading
 
 networks:
   rag4risk-network:

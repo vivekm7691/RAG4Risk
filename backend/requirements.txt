@@ -19,17 +19,17 @@ openpyxl>=3.1.0
 # (cuDNN, NCCL, cuSPARSELt) - see Dockerfile for CPU-only installation
 # torch is installed separately in Dockerfile before this requirements.txt
 sentence-transformers>=2.2.2
-chromadb>=0.4.18
+qdrant-client>=1.16.0  # Updated for better async support and bug fixes
 
 # LangChain (optional, for RAG orchestration)
 langchain-core>=0.1.0
 langchain>=0.1.0
 langchain-community>=0.0.20
 langchain-text-splitters>=0.0.1
-langchain-chroma>=0.1.0
 
 # HTTP client for Ollama
-httpx>=0.25.0
+# Note: httpx version pinned to avoid "client has been closed" issues with huggingface_hub
+httpx==0.27.0  # Pinned to avoid compatibility issues with huggingface_hub
 requests>=2.31.0
 
 # Environment and configuration

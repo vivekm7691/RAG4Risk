@@ -5,14 +5,14 @@ This script tests all Phase 2 services:
 2. Excel Parser (risk registers, issue logs)
 3. Chunker (Word and Excel)
 4. Embedding Service
-5. Vector Store (Chroma integration)
+5. Vector Store (Qdrant integration)
 
 Usage:
     python test_phase2.py
 
 Prerequisites:
     - Install dependencies: pip install -r requirements.txt
-    - Start Chroma: docker-compose up chroma -d
+    - Start Qdrant: docker-compose up qdrant -d
     - Place test files in Samples/ directory:
       - test_document.docx (Word document)
       - test_risk_register.xlsx (Excel risk register)
@@ -241,17 +241,17 @@ def test_embeddings():
 
 
 def test_vector_store_connection():
-    """Test Chroma vector store connection"""
+    """Test Qdrant vector store connection"""
     print_section("Test 6: Vector Store Connection")
     
     try:
         store = VectorStore()
-        print("  ✅ Connected to Chroma successfully!")
+        print("  ✅ Connected to Qdrant successfully!")
         return store
         
     except Exception as e:
         print(f"  ❌ Error: {str(e)}")
-        print("  💡 Make sure Chroma is running: docker-compose up chroma -d")
+        print("  💡 Make sure Qdrant is running: docker-compose up qdrant -d")
         return None
 
 
