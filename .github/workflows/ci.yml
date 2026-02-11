@@ -182,8 +182,62 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
       
+      - name: Free up disk space
+        run: |
+          echo "Disk space before cleanup:"
+          df -h
+          
+          # Remove unnecessary packages and files
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          
+          # Clean up Docker to free space
+          docker system prune -af --volumes || true
+          
+          # Clean up pip cache
+          pip cache purge || true
+          
+          # Clean up apt cache
+          sudo apt-get clean || true
+          sudo rm -rf /var/lib/apt/lists/* || true
+          
+          echo "Disk space after cleanup:"
+          df -h
+      
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            image=moby/buildkit:latest
+            network=host
+      
+      - name: Clean up Docker before build
+        run: |
+          echo "Cleaning up Docker before build..."
+          docker builder prune -af || true
+          docker image prune -af || true
+          docker container prune -f || true
+          docker volume prune -f || true
+          echo "Docker cleanup complete"
+          echo "Available disk space:"
+          df -h
+      
+      - name: Check disk space before build
+        run: |
+          echo "Checking disk space before Docker build..."
+          df -h
+          # Get available space in GB
+          AVAILABLE=$(df -BG / | tail -1 | awk '{print $4}' | sed 's/G//')
+          echo "Available space: ${AVAILABLE}GB"
+          if [ "$AVAILABLE" -lt 10 ]; then
+            echo "WARNING: Less than 10GB available, build may fail"
+            echo "SKIP_MODEL_DOWNLOAD=true" >> $GITHUB_ENV
+          else
+            echo "SKIP_MODEL_DOWNLOAD=false" >> $GITHUB_ENV
+          fi
       
       - name: Verify Docker Compose
         run: |
@@ -242,9 +296,22 @@ jobs:
       - name: Start services with Docker Compose
         run: |
           # Use docker compose if available, otherwise use docker-compose
+          # Build with BuildKit for better caching and space efficiency
+          export DOCKER_BUILDKIT=1
+          export COMPOSE_DOCKER_CLI_BUILD=1
+          
+          # Set SKIP_MODEL_DOWNLOAD environment variable if disk space is low
+          SKIP_DOWNLOAD="${{ env.SKIP_MODEL_DOWNLOAD }}"
+          if [ "$SKIP_DOWNLOAD" = "true" ]; then
+            echo "Setting SKIP_MODEL_DOWNLOAD=true to save disk space"
+            export SKIP_MODEL_DOWNLOAD=true
+          fi
+          
           if docker compose version > /dev/null 2>&1; then
+            docker compose build --parallel || docker compose build
             docker compose up -d
           else
+            DOCKER_BUILDKIT=1 docker-compose build --parallel || DOCKER_BUILDKIT=1 docker-compose build
             docker-compose up -d
           fi
         env:

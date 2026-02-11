@@ -30,7 +30,13 @@ COPY download_model.py ./
 # Run download script with retries
 # Note: Model download may fail due to httpx client closure issues, but will retry at runtime
 # This attempts to cache the model during build to avoid httpx client issues at runtime
-RUN python download_model.py || (echo "WARNING: Model download failed during build, will retry at runtime" && exit 0)
+# Skip model download if SKIP_MODEL_DOWNLOAD is set (for CI environments with limited space)
+ARG SKIP_MODEL_DOWNLOAD=false
+RUN if [ "$SKIP_MODEL_DOWNLOAD" != "true" ]; then \
+      python download_model.py || (echo "WARNING: Model download failed during build, will retry at runtime" && exit 0); \
+    else \
+      echo "Skipping model download during build (will download at runtime)"; \
+    fi
 
 # Copy application code
 COPY . .
