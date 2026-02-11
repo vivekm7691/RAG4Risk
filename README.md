@@ -14,7 +14,7 @@ RAG4Risk is a Retrieval-Augmented Generation (RAG) system designed to:
 
 ```
 ┌─────────┐     ┌──────────┐     ┌─────────────┐     ┌──────────┐
-│  User   │────▶│ Frontend │────▶│   Backend   │────▶│  Chroma  │
+│  User   │────▶│ Frontend │────▶│   Backend   │────▶│  Qdrant  │
 │         │◀────│  (React) │◀────│  (FastAPI)  │◀────│  (Vector │
 └─────────┘     └──────────┘     └─────────────┘     │    DB)   │
                                                      └──────────┘
@@ -29,7 +29,7 @@ RAG4Risk is a Retrieval-Augmented Generation (RAG) system designed to:
 
 - **Backend**: FastAPI (Python 3.11)
 - **Frontend**: React + TypeScript (Vite)
-- **Vector Database**: Chroma
+- **Vector Database**: Qdrant
 - **LLM**: Ollama (Llama 3.1 or Mistral)
 - **RAG Framework**: LangChain
 - **Containerization**: Docker Compose
@@ -66,13 +66,13 @@ docker-compose up -d
 This will start:
 - Backend API on http://localhost:8000
 - Frontend on http://localhost:3000
-- Chroma vector database on http://localhost:8001
+- Qdrant vector database on http://localhost:6333
 
 ### 4. Verify Services
 
 - Backend health: http://localhost:8000/health
 - Frontend: http://localhost:3000
-- Chroma: http://localhost:8001/api/v1/heartbeat
+- Qdrant: http://localhost:6333/health
 
 ## Development
 
@@ -140,10 +140,10 @@ RAG4Risk/
 See `.env.example` for all available environment variables.
 
 Key variables:
-- `OLLAMA_BASE_URL`: Ollama service URL (default: http://host.docker.internal:11434)
-- `OLLAMA_MODEL`: LLM model name (default: llama3.1)
-- `CHROMA_HOST`: Chroma host (default: chroma)
-- `CHROMA_PORT`: Chroma port (default: 8000)
+- `OLLAMA_BASE_URL`: Ollama service URL (default: http://ollama:11434)
+- `OLLAMA_MODEL`: LLM model name (default: llama3.2:3b)
+- `QDRANT_HOST`: Qdrant host (default: qdrant)
+- `QDRANT_PORT`: Qdrant port (default: 6333)
 
 ## Branching Strategy
 

@@ -222,18 +222,18 @@ jobs:
             echo "OLLAMA_BASE_URL=${{ secrets.OLLAMA_BASE_URL }}" >> $GITHUB_ENV
           fi
           
-          if [ -z "${{ secrets.CHROMA_HOST }}" ]; then
-            echo "CHROMA_HOST not set, using default: localhost"
-            echo "CHROMA_HOST=localhost" >> $GITHUB_ENV
+          if [ -z "${{ secrets.QDRANT_HOST }}" ]; then
+            echo "QDRANT_HOST not set, using default: localhost"
+            echo "QDRANT_HOST=localhost" >> $GITHUB_ENV
           else
-            echo "CHROMA_HOST=${{ secrets.CHROMA_HOST }}" >> $GITHUB_ENV
+            echo "QDRANT_HOST=${{ secrets.QDRANT_HOST }}" >> $GITHUB_ENV
           fi
           
-          if [ -z "${{ secrets.CHROMA_PORT }}" ]; then
-            echo "CHROMA_PORT not set, using default: 8000"
-            echo "CHROMA_PORT=8000" >> $GITHUB_ENV
+          if [ -z "${{ secrets.QDRANT_PORT }}" ]; then
+            echo "QDRANT_PORT not set, using default: 6333"
+            echo "QDRANT_PORT=6333" >> $GITHUB_ENV
           else
-            echo "CHROMA_PORT=${{ secrets.CHROMA_PORT }}" >> $GITHUB_ENV
+            echo "QDRANT_PORT=${{ secrets.QDRANT_PORT }}" >> $GITHUB_ENV
           fi
           
           echo "Ollama is optional for CI - integration tests will mock or skip Ollama-dependent tests"
@@ -249,8 +249,8 @@ jobs:
           fi
         env:
           OLLAMA_BASE_URL: ${{ env.OLLAMA_BASE_URL }}
-          CHROMA_HOST: ${{ env.CHROMA_HOST }}
-          CHROMA_PORT: ${{ env.CHROMA_PORT }}
+          QDRANT_HOST: ${{ env.QDRANT_HOST }}
+          QDRANT_PORT: ${{ env.QDRANT_PORT }}
       
       - name: Wait for services to be healthy
         run: |
@@ -283,15 +283,14 @@ jobs:
             elapsed=$((elapsed + 5))
           done
           
-          # Wait for Chroma (vector DB) - typically runs on port 8000 or separate port
+          # Wait for Qdrant (vector DB) - runs on port 6333
           elapsed=0
           while [ $elapsed -lt $timeout ]; do
-            if curl -f http://localhost:8000/api/v2/heartbeat > /dev/null 2>&1 || \
-               curl -f http://localhost:8001/api/v2/heartbeat > /dev/null 2>&1; then
-              echo "Chroma is ready!"
+            if curl -f http://localhost:6333/health > /dev/null 2>&1; then
+              echo "Qdrant is ready!"
               break
             fi
-            echo "Waiting for Chroma... ($elapsed seconds)"
+            echo "Waiting for Qdrant... ($elapsed seconds)"
             sleep 5
             elapsed=$((elapsed + 5))
           done
@@ -317,8 +316,8 @@ jobs:
         env:
           BACKEND_URL: http://localhost:8000
           FRONTEND_URL: http://localhost:3000
-          CHROMA_HOST: ${{ env.CHROMA_HOST }}
-          CHROMA_PORT: ${{ env.CHROMA_PORT }}
+          QDRANT_HOST: ${{ env.QDRANT_HOST }}
+          QDRANT_PORT: ${{ env.QDRANT_PORT }}
           OLLAMA_BASE_URL: ${{ env.OLLAMA_BASE_URL }}
           SKIP_OLLAMA_TESTS: ${{ env.SKIP_OLLAMA_TESTS }}
         continue-on-error: true

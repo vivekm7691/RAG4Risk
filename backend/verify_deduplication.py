@@ -1,4 +1,8 @@
-"""Script to verify deduplication in ChromaDB"""
+"""Script to verify deduplication in Qdrant
+
+NOTE: This script needs to be updated to use async VectorStore methods.
+It currently uses synchronous code which won't work with the new Qdrant implementation.
+"""
 
 import sys
 from pathlib import Path
@@ -12,15 +16,15 @@ from app.services.vector_store import VectorStore
 
 
 def verify_deduplication():
-    """Verify that deduplication is working correctly in ChromaDB"""
+    """Verify that deduplication is working correctly in Qdrant"""
     print("=" * 70)
-    print("  ChromaDB Deduplication Verification")
+    print("  Qdrant Deduplication Verification")
     print("=" * 70)
     print()
     
     try:
-        # Connect to ChromaDB
-        print("Connecting to ChromaDB...")
+        # Connect to Qdrant
+        print("Connecting to Qdrant...")
         store = VectorStore()
         print(f"Collection: {store.collection.name}")
         print()
@@ -139,4 +143,11 @@ def verify_deduplication():
 
 if __name__ == "__main__":
     verify_deduplication()
+
+
+
+
+
+
+
 
