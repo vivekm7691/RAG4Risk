@@ -167,27 +167,70 @@ class VectorStore:
                 ids=ids
             )
             existing_ids = {point.id for point in existing_points}
-            logger.info(f"Found {len(existing_ids)} existing points")
+            logger.info(f"Found {len(existing_ids)} existing points by chunk_id")
             
             # Check for existing content hashes
-            # Note: Qdrant doesn't support querying by payload directly in a simple way
-            # We'll skip content hash checking for now and rely on chunk_id uniqueness
-            # This is acceptable since chunk_id should be unique per document+chunk
+            # Get unique content hashes for chunks that don't already exist by ID
+            unique_content_hashes = set()
+            for idx, chunk in enumerate(chunks):
+                chunk_id = chunk["metadata"]["chunk_id"]
+                if chunk_id not in existing_ids:
+                    content_hash = content_hashes[chunk_id]
+                    unique_content_hashes.add(content_hash)
+            
+            # Query Qdrant for existing content hashes
+            existing_content_hashes = set()
+            if unique_content_hashes:
+                logger.debug(f"Checking for existing points with {len(unique_content_hashes)} unique content hashes")
+                for content_hash in unique_content_hashes:
+                    try:
+                        filter_condition = Filter(
+                            must=[
+                                FieldCondition(
+                                    key="content_hash",
+                                    match=MatchValue(value=content_hash)
+                                )
+                            ]
+                        )
+                        scroll_result = await client.scroll(
+                            collection_name=self.collection_name,
+                            scroll_filter=filter_condition,
+                            limit=1  # Only need to check existence
+                        )
+                        points = scroll_result[0] if isinstance(scroll_result, tuple) else scroll_result.points
+                        if points:
+                            existing_content_hashes.add(content_hash)
+                    except Exception as e:
+                        logger.warning(f"Error checking content_hash {content_hash[:8]}...: {e}")
+                        # Continue with other hashes even if one fails
+                
+                logger.info(f"Found {len(existing_content_hashes)} existing points by content_hash")
             
             # Prepare points for new chunks only
             new_points = []
             new_ids = []
+            skipped_by_id = 0
+            skipped_by_content_hash = 0
             
             for idx, chunk in enumerate(chunks):
                 chunk_id = chunk["metadata"]["chunk_id"]
+                content_hash = content_hashes[chunk_id]
                 
-                # Skip if already exists
+                # Skip if already exists by chunk_id
                 if chunk_id in existing_ids:
+                    skipped_by_id += 1
+                    continue
+                
+                # Skip if content_hash already exists (duplicate content)
+                if content_hash in existing_content_hashes:
+                    skipped_by_content_hash += 1
+                    logger.debug(f"Skipping chunk {chunk_id[:8]}... (duplicate content_hash: {content_hash[:8]}...)")
                     continue
                 
                 # Prepare payload (metadata) - Qdrant supports various types
                 payload = self._prepare_payload(chunk["metadata"])
                 payload["text"] = chunk["text"]  # Store text in payload for retrieval
+                payload["content_hash"] = content_hash  # Store content hash for deduplication
                 
                 point = PointStruct(
                     id=chunk_id,
@@ -207,6 +250,15 @@ class VectorStore:
                 logger.info(f"Successfully upserted {len(new_points)} points")
             else:
                 logger.info("No new points to add (all already exist)")
+            
+            # Log summary statistics
+            total_chunks = len(chunks)
+            chunks_added = len(new_ids)
+            logger.info(
+                f"Deduplication summary: {total_chunks} chunks processed, "
+                f"{chunks_added} added, {skipped_by_id} skipped by chunk_id, "
+                f"{skipped_by_content_hash} skipped by content_hash (duplicate content)"
+            )
         except Exception as e:
             logger.error(
                 f"Error in add_documents: {type(e).__name__}: {str(e)}",

@@ -96,6 +96,60 @@ async def test_ollama():
     return result
 
 
+@router.get("/ollama-models", status_code=status.HTTP_200_OK)
+async def list_ollama_models():
+    """
+    List all available Ollama models
+    
+    Returns:
+        - success: Whether the request succeeded
+        - models: List of available models with metadata (name, size, modified_at)
+        - error: Error message if request failed
+    """
+    result = {
+        "success": False,
+        "models": [],
+        "error": None
+    }
+    
+    try:
+        # Call Ollama API to get list of models
+        url = f"{settings.OLLAMA_BASE_URL}/api/tags"
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            
+            data = response.json()
+            
+            # Parse response - Ollama returns {"models": [...]}
+            if "models" in data:
+                models_list = []
+                for model in data["models"]:
+                    model_info = {
+                        "name": model.get("name", "unknown"),
+                        "size": model.get("size", 0),
+                        "modified_at": model.get("modified_at")
+                    }
+                    models_list.append(model_info)
+                
+                result["success"] = True
+                result["models"] = models_list
+            else:
+                result["error"] = "Unexpected response format from Ollama API"
+                
+    except httpx.TimeoutException:
+        result["error"] = f"Connection to Ollama timed out after 30 seconds"
+    except httpx.HTTPStatusError as e:
+        result["error"] = f"Ollama API returned error: {e.response.status_code} - {e.response.text}"
+    except httpx.RequestError as e:
+        result["error"] = f"Failed to connect to Ollama at {settings.OLLAMA_BASE_URL}: {str(e)}"
+    except Exception as e:
+        result["error"] = f"Unexpected error: {str(e)}"
+    
+    return result
+
+
 @router.get("/embedding", status_code=status.HTTP_200_OK)
 async def test_embedding(
     query: str = Query(..., description="Test query text to generate embedding for")
@@ -140,7 +194,8 @@ async def test_embedding(
 async def test_vector_search(
     query: str = Query(..., description="Test query text to search for"),
     top_k: int = Query(5, ge=1, le=20, description="Number of results to return"),
-    project_name: Optional[str] = Query(None, description="Optional project name filter")
+    project_name: Optional[str] = Query(None, description="Optional project name filter"),
+    include_chunks: bool = Query(False, description="Include full chunks with text in response")
 ):
     """
     Test vector store search speed
@@ -149,6 +204,7 @@ async def test_vector_search(
         query: Test query text
         top_k: Number of results to return
         project_name: Optional project name filter
+        include_chunks: If True, include full chunks with text in response (for investigation)
         
     Returns:
         - query: The input query
@@ -156,6 +212,7 @@ async def test_vector_search(
         - search_time: Time to search vector store (seconds)
         - total_time: Total time (seconds)
         - results_count: Number of results found
+        - chunks: Full chunks with text and metadata (if include_chunks=True)
         - success: Whether search succeeded
     """
     start_time = time.time()
@@ -165,6 +222,7 @@ async def test_vector_search(
         "search_time": None,
         "total_time": None,
         "results_count": 0,
+        "chunks": None,
         "success": False,
         "error": None
     }
@@ -188,6 +246,11 @@ async def test_vector_search(
         )
         result["search_time"] = time.time() - search_start
         result["results_count"] = len(search_results) if search_results else 0
+        
+        # Include full chunks if requested
+        if include_chunks and search_results:
+            result["chunks"] = search_results
+        
         result["total_time"] = time.time() - start_time
         result["success"] = True
         

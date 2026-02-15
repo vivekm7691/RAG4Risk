@@ -38,6 +38,11 @@ class QueryRequest(BaseModel):
         None,
         description="Metadata filters for Excel-based queries (severity, status, category, date_range, owner)"
     )
+    model: Optional[str] = Field(
+        None,
+        max_length=100,
+        description="Optional Ollama model name to use for this query (e.g., 'llama3.2:3b', 'mistral:7b'). If not specified, uses default from configuration."
+    )
 
 
 class QueryResponse(BaseModel):

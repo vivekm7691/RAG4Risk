@@ -226,11 +226,19 @@ async def list_documents(project_name: Optional[str] = None):
                 )
             
             # Scroll to get all points
-            points, _ = await vector_store.client.scroll(
-                collection_name=vector_store.collection_name,
-                scroll_filter=qdrant_filter,
-                limit=10000  # Large limit to get all points
-            )
+            # Use _get_client() to get a fresh client instance
+            client = await vector_store._get_client()
+            try:
+                scroll_result = await client.scroll(
+                    collection_name=vector_store.collection_name,
+                    scroll_filter=qdrant_filter,
+                    limit=10000  # Large limit to get all points
+                )
+                # Handle both tuple and object response formats
+                points = scroll_result[0] if isinstance(scroll_result, tuple) else scroll_result.points
+            finally:
+                # Client will be garbage collected
+                pass
             
             # Convert points to results format
             results = {

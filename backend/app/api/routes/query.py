@@ -91,15 +91,19 @@ async def query_documents(request: QueryRequest):
         logger.info(f"Chunks formatted in {format_time:.3f}s")
         
         # Generate response using RAG (now async)
+        # Use model from request if provided, otherwise use default
+        model_to_use = request.model or settings.OLLAMA_MODEL
+        rag_service_instance = RAGService(model=model_to_use) if request.model else rag_service
+        
         llm_start = time.time()
-        answer = await rag_service.generate_response(
+        answer = await rag_service_instance.generate_response(
             query=request.query,
             context_chunks=context_chunks,
             project_name=request.project_name,
             stream=False
         )
         llm_time = time.time() - llm_start
-        logger.info(f"LLM response generated in {llm_time:.3f}s")
+        logger.info(f"LLM response generated in {llm_time:.3f}s (model: {model_to_use})")
         
         # Build source citations
         sources = []
@@ -280,10 +284,14 @@ async def query_documents_stream(request: QueryRequest):
             yield f"data: {json.dumps(sources_data)}\n\n"
             
             # Generate streaming response using RAG (now async)
+            # Use model from request if provided, otherwise use default
+            model_to_use = request.model or settings.OLLAMA_MODEL
+            rag_service_instance = RAGService(model=model_to_use) if request.model else rag_service
+            
             llm_start = time.time()
             try:
                 # Get async generator from RAG service (returns generator, don't await)
-                async_gen = rag_service.generate_response(
+                async_gen = rag_service_instance.generate_response(
                     query=request.query,
                     context_chunks=context_chunks,
                     project_name=request.project_name,
@@ -300,7 +308,7 @@ async def query_documents_stream(request: QueryRequest):
                     yield f"data: {json.dumps(chunk_data)}\n\n"
                 
                 llm_time = time.time() - llm_start
-                logger.info(f"LLM response streamed in {llm_time:.3f}s")
+                logger.info(f"LLM response streamed in {llm_time:.3f}s (model: {model_to_use})")
                 
             except Exception as llm_error:
                 llm_time = time.time() - llm_start
