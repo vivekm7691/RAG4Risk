@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     # Ollama Settings
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "llama3.2:3b"
-    OLLAMA_TIMEOUT: float = 300.0  # 5 minutes timeout for LLM responses
+    OLLAMA_TIMEOUT: float = 1200.0  # 20 minutes timeout for LLM responses
     OLLAMA_STREAMING_ENABLED: bool = True  # Enable streaming responses by default
     
     # Embedding Settings

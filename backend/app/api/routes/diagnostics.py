@@ -96,6 +96,60 @@ async def test_ollama():
     return result
 
 
+@router.get("/ollama-models", status_code=status.HTTP_200_OK)
+async def list_ollama_models():
+    """
+    List all available Ollama models
+    
+    Returns:
+        - success: Whether the request succeeded
+        - models: List of available models with metadata (name, size, modified_at)
+        - error: Error message if request failed
+    """
+    result = {
+        "success": False,
+        "models": [],
+        "error": None
+    }
+    
+    try:
+        # Call Ollama API to get list of models
+        url = f"{settings.OLLAMA_BASE_URL}/api/tags"
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            
+            data = response.json()
+            
+            # Parse response - Ollama returns {"models": [...]}
+            if "models" in data:
+                models_list = []
+                for model in data["models"]:
+                    model_info = {
+                        "name": model.get("name", "unknown"),
+                        "size": model.get("size", 0),
+                        "modified_at": model.get("modified_at")
+                    }
+                    models_list.append(model_info)
+                
+                result["success"] = True
+                result["models"] = models_list
+            else:
+                result["error"] = "Unexpected response format from Ollama API"
+                
+    except httpx.TimeoutException:
+        result["error"] = f"Connection to Ollama timed out after 30 seconds"
+    except httpx.HTTPStatusError as e:
+        result["error"] = f"Ollama API returned error: {e.response.status_code} - {e.response.text}"
+    except httpx.RequestError as e:
+        result["error"] = f"Failed to connect to Ollama at {settings.OLLAMA_BASE_URL}: {str(e)}"
+    except Exception as e:
+        result["error"] = f"Unexpected error: {str(e)}"
+    
+    return result
+
+
 @router.get("/embedding", status_code=status.HTTP_200_OK)
 async def test_embedding(
     query: str = Query(..., description="Test query text to generate embedding for")

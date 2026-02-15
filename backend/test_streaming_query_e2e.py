@@ -386,11 +386,31 @@ def parse_sse_stream(response) -> tuple[Dict[str, Any], str, Dict[str, Any], Opt
     return sources_data, response_text, done_data, error_message
 
 
+def get_available_models() -> List[str]:
+    """
+    Fetch available Ollama models from the API
+    
+    Returns:
+        List of available model names
+    """
+    try:
+        response = requests.get(f"{API_BASE}/diagnostics/ollama-models", timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("success") and data.get("models"):
+                return [model.get("name", "") for model in data.get("models", []) if model.get("name")]
+        return []
+    except Exception as e:
+        print(f"[WARN] Could not fetch available models: {e}")
+        return []
+
+
 def test_streaming_query_e2e(
     query: str,
     project_name: Optional[str] = None,
     top_k: int = 5,
-    filters: Optional[Dict[str, Any]] = None
+    filters: Optional[Dict[str, Any]] = None,
+    model: Optional[str] = None
 ):
     """
     Main test function for end-to-end streaming query test
@@ -417,6 +437,9 @@ def test_streaming_query_e2e(
     
     if filters:
         query_data["filters"] = filters
+    
+    if model:
+        query_data["model"] = model
     
     # Display query parameters
     display_query_parameters(query_data)
@@ -576,6 +599,35 @@ def interactive_mode():
     top_k_str = input("Top K (optional, default 5, press Enter for default): ").strip()
     top_k = int(top_k_str) if top_k_str else 5
     
+    # Fetch and display available models
+    print("\nFetching available Ollama models...")
+    available_models = get_available_models()
+    model = None
+    if available_models:
+        print(f"\nAvailable models ({len(available_models)}):")
+        for idx, model_name in enumerate(available_models, 1):
+            print(f"  {idx}. {model_name}")
+        print("  0. Use default model (from configuration)")
+        model_choice = input("\nSelect model (enter number or model name, press Enter for default): ").strip()
+        if model_choice:
+            # Try to parse as number
+            try:
+                choice_num = int(model_choice)
+                if 1 <= choice_num <= len(available_models):
+                    model = available_models[choice_num - 1]
+                elif choice_num == 0:
+                    model = None
+            except ValueError:
+                # Not a number, treat as model name
+                if model_choice in available_models:
+                    model = model_choice
+                else:
+                    print(f"[WARN] Model '{model_choice}' not in available models list, but will try anyway.")
+                    model = model_choice
+    else:
+        model_input = input("Model name (optional, press Enter to use default): ").strip()
+        model = model_input if model_input else None
+    
     print("\nExcel Filters (optional, press Enter to skip each):")
     severity = input("  Severity: ").strip()
     severity = severity if severity else None
@@ -613,7 +665,7 @@ def interactive_mode():
     
     filters = filters if filters else None
     
-    test_streaming_query_e2e(query, project_name, top_k, filters)
+    test_streaming_query_e2e(query, project_name, top_k, filters, model)
 
 
 def main():
@@ -625,6 +677,8 @@ def main():
     parser.add_argument("--query", "-q", required=False, help="User query text")
     parser.add_argument("--project-name", "-p", help="Project name filter")
     parser.add_argument("--top-k", "-k", type=int, default=5, help="Number of results (default: 5)")
+    parser.add_argument("--model", "-m", help="Ollama model name to use (e.g., 'llama3.2:3b', 'mistral:7b'). Use --list-models to see available models.")
+    parser.add_argument("--list-models", action="store_true", help="List available Ollama models and exit")
     
     # Filter arguments
     parser.add_argument("--severity", help="Filter by severity level")
@@ -636,6 +690,19 @@ def main():
     
     args = parser.parse_args()
     
+    # Handle --list-models flag
+    if args.list_models:
+        print("Fetching available Ollama models...")
+        available_models = get_available_models()
+        if available_models:
+            print(f"\nAvailable models ({len(available_models)}):")
+            for model_name in available_models:
+                print(f"  - {model_name}")
+        else:
+            print("\n[WARN] Could not fetch available models. Ollama may not be running or accessible.")
+            print("You can still specify a model name manually using --model flag.")
+        return
+    
     # If no query provided, use interactive mode
     if not args.query:
         interactive_mode()
@@ -645,7 +712,8 @@ def main():
             query=args.query,
             project_name=args.project_name,
             top_k=args.top_k,
-            filters=filters
+            filters=filters,
+            model=args.model
         )
 
 
