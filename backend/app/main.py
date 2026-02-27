@@ -41,10 +41,11 @@ async def health_check():
 
 
 # Register API routes
-from app.api.routes import documents, query, diagnostics
+from app.api.routes import documents, query, diagnostics, projects
 app.include_router(documents.router, prefix="/api/documents", tags=["documents"])
 app.include_router(query.router, prefix="/api/query", tags=["query"])
 app.include_router(diagnostics.router, prefix="/api/diagnostics", tags=["diagnostics"])
+app.include_router(projects.router, prefix="/api/projects", tags=["projects"])
 
 
 @app.on_event("startup")

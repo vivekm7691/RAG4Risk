@@ -85,27 +85,17 @@ class RAGService:
         project_name: Optional[str] = None
     ) -> str:
         """
-        Format retrieved chunks as context text
-        
-        Args:
-            chunks: List of chunk dictionaries with 'text' and 'metadata'
-            project_name: Optional project name for context labeling
-            
-        Returns:
-            Formatted context string
+        Format retrieved chunks as context text.
+        When chunks include is_past_project, groups into "Current Project" and "Similar Past Projects" sections.
         """
-        context_parts = []
-        
+        current_chunks = []
+        past_chunks = []  # list of (project_label, chunk_text, source_info)
         for idx, chunk in enumerate(chunks, 1):
             metadata = chunk.get("metadata", {})
             chunk_text = chunk.get("text", "")
-            
-            # Build source citation
             doc_name = metadata.get("file_name", "Unknown document")
             doc_type = metadata.get("document_type", "")
-            chunk_id = metadata.get("chunk_id", "")
-            
-            # For Excel documents, include row and sheet info
+            pname = metadata.get("project_name", "")
             source_info = f"[Source {idx}: {doc_name}"
             if doc_type in ["risk register", "issue log"]:
                 row_num = metadata.get("row_number")
@@ -114,11 +104,26 @@ class RAGService:
                     source_info += f", Row {row_num}"
                 if sheet_name:
                     source_info += f", Sheet: {sheet_name}"
-            source_info += f"]"
-            
-            context_parts.append(f"{source_info}\n{chunk_text}")
-        
-        return "\n\n---\n\n".join(context_parts)
+            source_info += "]"
+            if chunk.get("is_past_project"):
+                past_chunks.append((pname or "Past project", chunk_text, source_info))
+            else:
+                current_chunks.append(f"{source_info}\n{chunk_text}")
+
+        if not past_chunks:
+            return "\n\n---\n\n".join(current_chunks)
+
+        # Phase 3.5: separate current vs past project context
+        parts = []
+        if current_chunks:
+            label = f"Context from Current Project ({project_name or 'current'}):"
+            parts.append(label)
+            parts.append("\n\n".join(current_chunks))
+        if past_chunks:
+            parts.append("Context from Similar Past Projects:")
+            for proj_label, text, src in past_chunks:
+                parts.append(f"  [{proj_label}] - {src}\n{text}")
+        return "\n\n---\n\n".join(parts)
     
     def _build_prompt(
         self,
@@ -127,15 +132,8 @@ class RAGService:
         project_name: Optional[str] = None
     ) -> str:
         """
-        Build the RAG prompt with context injection
-        
-        Args:
-            query: User query
-            context: Formatted context from retrieved chunks
-            project_name: Optional project name
-            
-        Returns:
-            Complete prompt string
+        Build the RAG prompt with context injection.
+        Context string may already contain "Context from Current Project" / "Context from Similar Past Projects" sections.
         """
         project_context = ""
         if project_name:
@@ -143,7 +141,6 @@ class RAGService:
         
         prompt = f"""You are a helpful assistant that answers questions based on provided context documents{project_context}.
 
-Context from documents:
 {context}
 
 Question: {query}
@@ -152,7 +149,7 @@ Instructions:
 - Answer the question based ONLY on the information provided in the context above.
 - If the context doesn't contain enough information to answer the question, say so clearly.
 - Be concise and accurate.
-- Cite specific sources when referencing information (use the [Source X: ...] markers from the context).
+- Cite specific sources when referencing information (use the [Source X: ...] or project labels from the context).
 - If the question is about risks or issues, provide specific details from the context including severity, status, and other relevant metadata.
 
 Answer:"""
