@@ -32,6 +32,14 @@ class Settings(BaseSettings):
     CHUNK_SIZE: int = 1000
     CHUNK_OVERLAP: int = 200
     TOP_K: int = 5
+
+    # Phase 3.5: Past Projects Enhancement
+    DEFAULT_CURRENT_PROJECT_WEIGHT: float = 0.7
+    DEFAULT_PAST_PROJECTS_WEIGHT: float = 0.3
+    SIMILAR_PROJECTS_COUNT: int = 3
+    PROJECT_SIMILARITY_SEMANTIC_WEIGHT: float = 0.5
+    PROJECT_SIMILARITY_METADATA_WEIGHT: float = 0.5
+    PROJECT_METADATA_DB_PATH: str = "data/project_metadata.db"
     
     # File Upload Settings
     MAX_UPLOAD_SIZE: int = 10 * 1024 * 1024  # 10MB

@@ -12,9 +12,22 @@ class SourceCitation(BaseModel):
     project_name: str
     document_type: str
     relevance_score: Optional[float] = None
+    is_past_project: bool = False
     # Excel-specific metadata
     row_number: Optional[int] = None
     sheet_name: Optional[str] = None
+
+
+class ForceProjectSelection(BaseModel):
+    """Force-select a past project by customer and project name at query time."""
+    customer: str = Field(..., min_length=1, max_length=200)
+    project_name: str = Field(..., min_length=1, max_length=200)
+
+
+class ContextWeighting(BaseModel):
+    """Weights for current vs past project context (Phase 3.5)."""
+    current_project_weight: float = Field(0.7, ge=0.0, le=1.0)
+    past_projects_weight: float = Field(0.3, ge=0.0, le=1.0)
 
 
 class QueryFilters(BaseModel):
@@ -43,12 +56,54 @@ class QueryRequest(BaseModel):
         max_length=100,
         description="Optional Ollama model name to use for this query (e.g., 'llama3.2:3b', 'mistral:7b'). If not specified, uses default from configuration."
     )
+    # Phase 3.5: Past projects
+    include_past_projects: bool = Field(False, description="Include context from similar past projects")
+    context_weighting: Optional[ContextWeighting] = Field(
+        None,
+        description="Weights for current vs past project context (default 70% current, 30% past)"
+    )
+    exclude_chunk_ids: Optional[List[str]] = Field(
+        None,
+        description="Chunk IDs to exclude from context (user dropped from preview)"
+    )
+    force_project: Optional[ForceProjectSelection] = Field(
+        None,
+        description="Force-select this past project (customer + project_name) at query time"
+    )
 
 
 class QueryResponse(BaseModel):
     """Query response model"""
     answer: str
     sources: List[SourceCitation]
+    query: str
+    project_name: Optional[str] = None
+    similar_projects: Optional[List[Dict[str, Any]]] = None
+
+
+# Phase 3.5: Retrieval preview (no LLM call)
+class PreviewChunk(BaseModel):
+    """Candidate chunk for retrieval preview."""
+    chunk_id: str
+    text: str
+    project_name: str
+    customer: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+    is_past_project: bool = False
+
+
+class SimilarProjectPreview(BaseModel):
+    """Similar project entry in preview."""
+    project_name: str
+    customer: Optional[str] = None
+    similarity_score: float
+    metadata: Optional[Dict[str, Any]] = None
+
+
+class RetrievalPreviewResponse(BaseModel):
+    """Response from retrieve-preview endpoint (no LLM)."""
+    similar_projects: List[SimilarProjectPreview]
+    chunks: List[PreviewChunk]
     query: str
     project_name: Optional[str] = None
 

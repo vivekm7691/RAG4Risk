@@ -8,11 +8,19 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import StreamingResponse
 
-from app.models.query import QueryRequest, QueryResponse, SourceCitation
+from app.models.query import (
+    QueryRequest,
+    QueryResponse,
+    SourceCitation,
+    RetrievalPreviewResponse,
+    PreviewChunk,
+    SimilarProjectPreview,
+)
 from app.models.document import DocumentType
 from app.services.embeddings import EmbeddingService
 from app.services.vector_store import get_vector_store
 from app.services.rag_service import RAGService
+from app.services.query_service import QueryService
 from app.config import settings
 
 # Set up logger
@@ -23,7 +31,71 @@ router = APIRouter()
 # Initialize services
 embedding_service = EmbeddingService()
 rag_service = RAGService()
-# Note: vector_store is now async, get it per request
+query_service = QueryService()
+
+
+def _context_weighting_from_request(request: QueryRequest):
+    """Get current/past weights from request or config defaults."""
+    if request.context_weighting:
+        return request.context_weighting.current_project_weight, request.context_weighting.past_projects_weight
+    return settings.DEFAULT_CURRENT_PROJECT_WEIGHT, settings.DEFAULT_PAST_PROJECTS_WEIGHT
+
+
+@router.post("/retrieve-preview", response_model=RetrievalPreviewResponse, status_code=status.HTTP_200_OK)
+async def retrieve_preview(request: QueryRequest):
+    """
+    Phase 3.5: Retrieval preview when including past projects.
+    Returns similar projects (with metadata) and candidate chunks (with chunk_id). No LLM call.
+    """
+    if not request.include_past_projects:
+        return RetrievalPreviewResponse(
+            similar_projects=[],
+            chunks=[],
+            query=request.query,
+            project_name=request.project_name,
+        )
+    cw, pw = _context_weighting_from_request(request)
+    force = request.force_project.model_dump() if request.force_project else None
+    try:
+        result = await query_service.retrieve_with_past_projects(
+            query=request.query,
+            project_name=request.project_name,
+            top_k=request.top_k,
+            current_project_weight=cw,
+            past_projects_weight=pw,
+            exclude_chunk_ids=request.exclude_chunk_ids,
+            force_project=force,
+            preview_only=True,
+        )
+    except Exception as e:
+        logger.exception("Retrieve preview failed")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+    similar = [
+        SimilarProjectPreview(
+            project_name=sp["project_name"],
+            customer=sp.get("customer"),
+            similarity_score=sp.get("similarity_score", 0.0),
+            metadata=sp.get("metadata").model_dump() if hasattr(sp.get("metadata"), "model_dump") else (sp.get("metadata") or {}),
+        )
+        for sp in result["similar_projects"]
+    ]
+    chunks = [
+        PreviewChunk(
+            chunk_id=(c["metadata"].get("chunk_id") or ""),
+            text=c["text"],
+            project_name=c["metadata"].get("project_name", ""),
+            customer=c["metadata"].get("_similar_project", {}).get("customer") if c.get("is_past_project") else c["metadata"].get("customer"),
+            metadata={k: v for k, v in c["metadata"].items() if not k.startswith("_")},
+            is_past_project=c.get("is_past_project", False),
+        )
+        for c in result["chunks"]
+    ]
+    return RetrievalPreviewResponse(
+        similar_projects=similar,
+        chunks=chunks,
+        query=request.query,
+        project_name=request.project_name,
+    )
 
 
 @router.post("", response_model=QueryResponse, status_code=status.HTTP_200_OK)
@@ -44,105 +116,97 @@ async def query_documents(request: QueryRequest):
     total_start = time.time()
     
     try:
-        # Generate query embedding
         embedding_start = time.time()
-        query_embedding = embedding_service.generate_embedding(request.query)
-        query_embedding_list = query_embedding.tolist()
+        search_results = None
+        similar_projects_result = None
+
+        if request.include_past_projects and request.project_name:
+            cw, pw = _context_weighting_from_request(request)
+            force = request.force_project.model_dump() if request.force_project else None
+            result = await query_service.retrieve_with_past_projects(
+                query=request.query,
+                project_name=request.project_name,
+                top_k=request.top_k,
+                current_project_weight=cw,
+                past_projects_weight=pw,
+                exclude_chunk_ids=request.exclude_chunk_ids,
+                force_project=force,
+                preview_only=False,
+            )
+            similar_projects_result = result["similar_projects"]
+            search_results = result["chunks"]
+        else:
+            query_embedding = embedding_service.generate_embedding(request.query).tolist()
+            filters_dict = request.filters.model_dump(exclude_none=True) if request.filters else None
+            vector_store = await get_vector_store()
+            search_results = await vector_store.search(
+                query_embedding=query_embedding,
+                top_k=request.top_k,
+                project_name=request.project_name,
+                document_type=None,
+                filters=filters_dict,
+            )
+
         embedding_time = time.time() - embedding_start
-        logger.info(f"Query embedding generated in {embedding_time:.3f}s")
-        
-        # Prepare filters for vector store
-        filters_dict = None
-        if request.filters:
-            filters_dict = request.filters.model_dump(exclude_none=True)
-        
-        # Search vector store (now async with Qdrant)
-        search_start = time.time()
-        vector_store = await get_vector_store()
-        search_results = await vector_store.search(
-            query_embedding=query_embedding_list,
-            top_k=request.top_k,
-            project_name=request.project_name,
-            document_type=None,
-            filters=filters_dict
-        )
-        search_time = time.time() - search_start
-        logger.info(f"Vector search completed in {search_time:.3f}s, found {len(search_results) if search_results else 0} results")
-        
+        search_time = 0.0  # folded into embedding_time for past-projects path
+
         if not search_results:
             total_time = time.time() - total_start
-            logger.info(f"Query completed in {total_time:.3f}s (no results found)")
             return QueryResponse(
                 answer="I couldn't find any relevant information to answer your question.",
                 sources=[],
                 query=request.query,
-                project_name=request.project_name
+                project_name=request.project_name,
+                similar_projects=[sp.get("project_name") for sp in (similar_projects_result or [])] or None,
             )
-        
-        # Format chunks for RAG service
+
         format_start = time.time()
         context_chunks = []
-        for result in search_results:
-            context_chunks.append({
-                "text": result["text"],
-                "metadata": result["metadata"]
-            })
+        for r in search_results:
+            if isinstance(r, dict):
+                text = r.get("text", "")
+                meta = r.get("metadata", r) if "metadata" in r else r
+            else:
+                text, meta = r["text"], r["metadata"]
+            context_chunks.append({"text": text, "metadata": meta})
         format_time = time.time() - format_start
-        logger.info(f"Chunks formatted in {format_time:.3f}s")
-        
-        # Generate response using RAG (now async)
-        # Use model from request if provided, otherwise use default
+
         model_to_use = request.model or settings.OLLAMA_MODEL
         rag_service_instance = RAGService(model=model_to_use) if request.model else rag_service
-        
         llm_start = time.time()
         answer = await rag_service_instance.generate_response(
             query=request.query,
             context_chunks=context_chunks,
             project_name=request.project_name,
-            stream=False
+            stream=False,
         )
         llm_time = time.time() - llm_start
-        logger.info(f"LLM response generated in {llm_time:.3f}s (model: {model_to_use})")
-        
-        # Build source citations
+
         sources = []
-        for result in search_results:
-            metadata = result["metadata"]
-            
-            # Calculate relevance score from distance (lower distance = higher relevance)
-            distance = result.get("distance")
-            relevance_score = None
-            if distance is not None:
-                # Convert distance to similarity score (1 - normalized distance)
-                # Assuming cosine distance ranges from 0 to 2, normalize to 0-1
-                relevance_score = max(0.0, 1.0 - (distance / 2.0))
-            
-            citation = SourceCitation(
-                document_id=metadata.get("document_id", ""),
-                document_name=metadata.get("file_name", "Unknown document"),
-                chunk_id=metadata.get("chunk_id", ""),
-                project_name=metadata.get("project_name", ""),
-                document_type=metadata.get("document_type", ""),
+        for r in search_results:
+            meta = r.get("metadata", r) if isinstance(r, dict) and "metadata" in r else (r if isinstance(r, dict) else {})
+            dist = r.get("distance") if isinstance(r, dict) else None
+            relevance_score = max(0.0, 1.0 - (dist / 2.0)) if dist is not None else None
+            is_past = r.get("is_past_project", False) if isinstance(r, dict) else False
+            sources.append(SourceCitation(
+                document_id=meta.get("document_id", ""),
+                document_name=meta.get("file_name", "Unknown document"),
+                chunk_id=meta.get("chunk_id", ""),
+                project_name=meta.get("project_name", ""),
+                document_type=meta.get("document_type", ""),
                 relevance_score=relevance_score,
-                # Excel-specific metadata
-                row_number=metadata.get("row_number"),
-                sheet_name=metadata.get("sheet_name")
-            )
-            sources.append(citation)
-        
+                is_past_project=is_past,
+                row_number=meta.get("row_number"),
+                sheet_name=meta.get("sheet_name"),
+            ))
+
         total_time = time.time() - total_start
-        logger.info(
-            f"Query completed in {total_time:.3f}s "
-            f"(embedding: {embedding_time:.3f}s, search: {search_time:.3f}s, "
-            f"format: {format_time:.3f}s, llm: {llm_time:.3f}s)"
-        )
-        
         return QueryResponse(
             answer=answer,
             sources=sources,
             query=request.query,
-            project_name=request.project_name
+            project_name=request.project_name,
+            similar_projects=[sp.get("project_name") for sp in (similar_projects_result or [])] or None,
         )
         
     except Exception as e:
@@ -182,30 +246,37 @@ async def query_documents_stream(request: QueryRequest):
     async def generate_stream():
         """Generator function for streaming response"""
         try:
-            # Generate query embedding
             embedding_start = time.time()
-            query_embedding = embedding_service.generate_embedding(request.query)
-            query_embedding_list = query_embedding.tolist()
+            similar_projects_stream = None
+            if request.include_past_projects and request.project_name:
+                cw, pw = _context_weighting_from_request(request)
+                force = request.force_project.model_dump() if request.force_project else None
+                result = await query_service.retrieve_with_past_projects(
+                    query=request.query,
+                    project_name=request.project_name,
+                    top_k=request.top_k,
+                    current_project_weight=cw,
+                    past_projects_weight=pw,
+                    exclude_chunk_ids=request.exclude_chunk_ids,
+                    force_project=force,
+                    preview_only=False,
+                )
+                similar_projects_stream = result["similar_projects"]
+                search_results = result["chunks"]
+            else:
+                query_embedding = embedding_service.generate_embedding(request.query).tolist()
+                filters_dict = request.filters.model_dump(exclude_none=True) if request.filters else None
+                vector_store = await get_vector_store()
+                search_results = await vector_store.search(
+                    query_embedding=query_embedding,
+                    top_k=request.top_k,
+                    project_name=request.project_name,
+                    document_type=None,
+                    filters=filters_dict,
+                )
             embedding_time = time.time() - embedding_start
-            logger.info(f"Query embedding generated in {embedding_time:.3f}s")
-            
-            # Prepare filters for vector store
-            filters_dict = None
-            if request.filters:
-                filters_dict = request.filters.model_dump(exclude_none=True)
-            
-            # Search vector store (now async with Qdrant)
-            search_start = time.time()
-            vector_store = await get_vector_store()
-            search_results = await vector_store.search(
-                query_embedding=query_embedding_list,
-                top_k=request.top_k,
-                project_name=request.project_name,
-                document_type=None,
-                filters=filters_dict
-            )
-            search_time = time.time() - search_start
-            logger.info(f"Vector search completed in {search_time:.3f}s, found {len(search_results) if search_results else 0} results")
+            search_time = 0.0
+            logger.info(f"Retrieval completed in {embedding_time:.3f}s, found {len(search_results) if search_results else 0} results")
             
             if not search_results:
                 total_time = time.time() - total_start
@@ -240,47 +311,42 @@ async def query_documents_stream(request: QueryRequest):
                 yield f"data: {json.dumps(done_data)}\n\n"
                 return
             
-            # Build source citations
+            # Build source citations (support both raw search results and query_service chunk dicts)
             sources = []
             for result in search_results:
-                metadata = result["metadata"]
-                
-                # Calculate relevance score from distance
-                distance = result.get("distance")
-                relevance_score = None
-                if distance is not None:
-                    relevance_score = max(0.0, 1.0 - (distance / 2.0))
-                
+                meta = result.get("metadata", result) if isinstance(result, dict) else {}
+                dist = result.get("distance") if isinstance(result, dict) else None
+                relevance_score = max(0.0, 1.0 - (dist / 2.0)) if dist is not None else None
+                is_past = result.get("is_past_project", False) if isinstance(result, dict) else False
                 citation = SourceCitation(
-                    document_id=metadata.get("document_id", ""),
-                    document_name=metadata.get("file_name", "Unknown document"),
-                    chunk_id=metadata.get("chunk_id", ""),
-                    project_name=metadata.get("project_name", ""),
-                    document_type=metadata.get("document_type", ""),
+                    document_id=meta.get("document_id", ""),
+                    document_name=meta.get("file_name", "Unknown document"),
+                    chunk_id=meta.get("chunk_id", ""),
+                    project_name=meta.get("project_name", ""),
+                    document_type=meta.get("document_type", ""),
                     relevance_score=relevance_score,
-                    row_number=metadata.get("row_number"),
-                    sheet_name=metadata.get("sheet_name")
+                    is_past_project=is_past,
+                    row_number=meta.get("row_number"),
+                    sheet_name=meta.get("sheet_name"),
                 )
                 sources.append(citation)
             
-            # Format chunks for RAG service
             format_start = time.time()
             context_chunks = []
-            for result in search_results:
-                context_chunks.append({
-                    "text": result["text"],
-                    "metadata": result["metadata"]
-                })
+            for r in search_results:
+                text = r.get("text", "")
+                meta = r.get("metadata", r) if isinstance(r, dict) and "metadata" in r else (r if isinstance(r, dict) else {})
+                context_chunks.append({"text": text, "metadata": meta})
             format_time = time.time() - format_start
-            logger.info(f"Chunks formatted in {format_time:.3f}s")
             
-            # Send sources first
             sources_data = {
                 "type": "sources",
-                "sources": [source.model_dump() for source in sources],
+                "sources": [s.model_dump() for s in sources],
                 "query": request.query,
-                "project_name": request.project_name
+                "project_name": request.project_name,
             }
+            if similar_projects_stream:
+                sources_data["similar_projects"] = [sp.get("project_name") for sp in similar_projects_stream]
             yield f"data: {json.dumps(sources_data)}\n\n"
             
             # Generate streaming response using RAG (now async)

@@ -456,6 +456,40 @@ class VectorStore:
             
         except Exception as e:
             raise RuntimeError(f"Failed to get document chunks: {str(e)}")
+
+    async def get_chunks_by_project(self, project_name: str, limit: int = 10000) -> List[Dict[str, Any]]:
+        """
+        Get all chunks for a project (for project-level aggregation, e.g. similarity).
+
+        Args:
+            project_name: Project name to filter by
+            limit: Max number of chunks to return (default 10000)
+
+        Returns:
+            List of chunk dicts with 'text' and 'metadata' (includes chunk_id, project_name, etc.)
+        """
+        await self._ensure_initialized()
+        client = await self._get_client()
+        try:
+            filter_condition = Filter(
+                must=[FieldCondition(key="project_name", match=MatchValue(value=project_name))]
+            )
+            scroll_result = await client.scroll(
+                collection_name=self.collection_name,
+                scroll_filter=filter_condition,
+                limit=limit,
+            )
+            points = scroll_result[0] if isinstance(scroll_result, tuple) else scroll_result.points
+            chunks = []
+            for point in points:
+                payload = point.payload
+                chunks.append({
+                    "text": payload.get("text", ""),
+                    "metadata": {k: v for k, v in payload.items() if k != "text"},
+                })
+            return chunks
+        except Exception as e:
+            raise RuntimeError(f"Failed to get chunks by project: {str(e)}")
     
     async def clear_collection(self) -> bool:
         """

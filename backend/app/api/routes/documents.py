@@ -1,5 +1,6 @@
 """Document upload and management API routes"""
 
+import json
 import os
 import uuid
 from datetime import datetime
@@ -13,9 +14,11 @@ from app.models.document import (
     DocumentType,
     DocumentUpload,
     DocumentMetadata,
-    DocumentResponse
+    DocumentResponse,
+    ProjectMetadataCreateUpdate,
 )
 from app.services.document_parser import DocumentParser
+from app.services.project_metadata import ProjectMetadataService
 from app.services.excel_parser import ExcelParser
 from app.services.chunker import Chunker
 from app.services.embeddings import EmbeddingService
@@ -29,7 +32,7 @@ document_parser = DocumentParser()
 excel_parser = ExcelParser()
 chunker = Chunker()
 embedding_service = EmbeddingService()
-# Note: vector_store is now async, get it per request
+project_metadata_service = ProjectMetadataService()
 
 # Temporary file storage directory
 UPLOAD_DIR = Path("uploads")
@@ -40,15 +43,19 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 async def upload_document(
     file: UploadFile = File(...),
     project_name: str = Form(...),
-    document_type: str = Form(...)
+    document_type: str = Form(...),
+    project_metadata: Optional[str] = Form(None, description="Optional JSON: {customer, csg_products?, csg_role?, ...} for Phase 3.5 project metadata"),
 ):
     """
-    Upload a document (Word or Excel) and process it into the vector database
+    Upload a document (Word or Excel) and process it into the vector database.
     
     - **file**: Document file (.docx for Word, .xlsx for Excel)
     - **project_name**: Name of the project this document belongs to
-    - **document_type**: Type of document (statement of work, solution description document, 
+    - **document_type**: Type of document (statement of work, solution description document,
       proposal document, risk register, issue log)
+    - **project_metadata**: Optional JSON string with customer (required) and optional fields:
+      csg_products, csg_role, integration_complexity, client_type, project_size, project_complexity, date_range.
+      If provided, creates/updates project metadata for similarity and past-projects feature.
     """
     try:
         # Validate document type
@@ -165,6 +172,19 @@ async def upload_document(
                 file_name=file.filename,
                 file_size=file_size
             )
+            
+            # Optional: create/update project metadata (Phase 3.5)
+            if project_metadata:
+                try:
+                    meta_dict = json.loads(project_metadata)
+                    meta_dict.setdefault("project_name", project_name)
+                    if not meta_dict.get("customer"):
+                        meta_dict["customer"] = project_name  # fallback
+                    meta_dto = ProjectMetadataCreateUpdate(**meta_dict)
+                    project_metadata_service.create_or_update_project_metadata(meta_dto)
+                except (json.JSONDecodeError, Exception) as e:
+                    import logging
+                    logging.getLogger(__name__).warning("Optional project_metadata ignored: %s", e)
             
             # Prepare response message
             if row_count is not None:
