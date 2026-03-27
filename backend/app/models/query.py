@@ -72,13 +72,24 @@ class QueryRequest(BaseModel):
     )
 
 
+class SimilarProjectPreview(BaseModel):
+    """Similar project entry in preview or final query response."""
+    project_name: str
+    customer: Optional[str] = None
+    similarity_score: float
+    metadata: Optional[Dict[str, Any]] = None
+
+
 class QueryResponse(BaseModel):
     """Query response model"""
     answer: str
     sources: List[SourceCitation]
     query: str
     project_name: Optional[str] = None
-    similar_projects: Optional[List[Dict[str, Any]]] = None
+    similar_projects: Optional[List[SimilarProjectPreview]] = Field(
+        None,
+        description="Similar past projects used for context (scores + metadata when available)",
+    )
 
 
 # Phase 3.5: Retrieval preview (no LLM call)
@@ -90,14 +101,6 @@ class PreviewChunk(BaseModel):
     customer: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
     is_past_project: bool = False
-
-
-class SimilarProjectPreview(BaseModel):
-    """Similar project entry in preview."""
-    project_name: str
-    customer: Optional[str] = None
-    similarity_score: float
-    metadata: Optional[Dict[str, Any]] = None
 
 
 class RetrievalPreviewResponse(BaseModel):
@@ -121,6 +124,7 @@ class StreamingSources(BaseModel):
     sources: List[SourceCitation]
     query: str
     project_name: Optional[str] = None
+    similar_projects: Optional[List[SimilarProjectPreview]] = None
 
 
 class StreamingDone(BaseModel):

@@ -3,8 +3,10 @@
 Hybrid similarity: semantic (project-level embeddings) + metadata-based.
 """
 
+import copy
 import logging
-from typing import List, Optional, Dict, Any
+import time
+from typing import List, Optional, Dict, Any, Tuple
 
 from app.config import settings
 from app.services.embeddings import EmbeddingService
@@ -77,10 +79,33 @@ class ProjectSimilarityService:
         self.embedding_service = embedding_service or EmbeddingService()
         self.metadata_service = metadata_service or ProjectMetadataService()
         self._project_embeddings: Dict[str, Any] = {}  # project_name -> vector (list)
-        self._similarity_cache: Dict[str, List[Dict]] = {}  # cache_key -> top_k results
+        # cache_key -> (results, monotonic_timestamp)
+        self._similarity_cache: Dict[str, Tuple[List[Dict[str, Any]], float]] = {}
         self._top_k = getattr(settings, "SIMILAR_PROJECTS_COUNT", 3)
         self._semantic_weight = getattr(settings, "PROJECT_SIMILARITY_SEMANTIC_WEIGHT", 0.5)
         self._metadata_weight = getattr(settings, "PROJECT_SIMILARITY_METADATA_WEIGHT", 0.5)
+
+    def clear_similarity_cache(self) -> None:
+        """Invalidate cached find_similar_projects results (call after metadata changes)."""
+        self._similarity_cache.clear()
+
+    def clear_project_embedding(self, project_name: str) -> None:
+        """Drop cached embedding for one project (e.g. after new documents ingested)."""
+        self._project_embeddings.pop(project_name, None)
+        self.clear_similarity_cache()
+
+    def _cache_key(
+        self,
+        project_name: str,
+        top_k: int,
+        exclude_project_names: List[str],
+        force_project: Optional[Dict[str, str]],
+    ) -> str:
+        ex = ",".join(sorted(exclude_project_names))
+        fp = ""
+        if force_project:
+            fp = f"{force_project.get('customer', '')}|{force_project.get('project_name', '')}"
+        return f"{project_name}|{top_k}|{ex}|{fp}"
 
     async def _get_project_embedding(self, project_name: str, vector_store: VectorStore) -> Optional[List[float]]:
         """Build aggregated project document and return its embedding (cached in memory)."""
@@ -105,20 +130,29 @@ class ProjectSimilarityService:
             return None
 
     def _metadata_similarity(self, current: ProjectMetadata, other: ProjectMetadata) -> float:
-        """Score 0-1 from metadata fields (weighted average)."""
-        scores = []
-        # CSG products: Jaccard
-        scores.append(_jaccard(current.csg_products, other.csg_products))
-        # Ordinal-like
-        scores.append(_ordinal_score(COMPLEXITY_ORDER, current.integration_complexity, other.integration_complexity))
-        scores.append(_ordinal_score(SIZE_ORDER, current.project_size, other.project_size))
-        scores.append(_ordinal_score(PROJECT_COMPLEXITY_ORDER, current.project_complexity, other.project_complexity))
-        # Exact match for role and client_type
-        scores.append(1.0 if (current.csg_role and current.csg_role == other.csg_role) else 0.0)
-        scores.append(1.0 if (current.client_type and current.client_type == other.client_type) else 0.0)
-        # Date proximity
-        scores.append(_date_proximity_score(current.date_range, other.date_range))
-        return sum(scores) / len(scores) if scores else 0.5
+        """Score 0-1 from metadata fields (configurable weighted average)."""
+        pairs: List[Tuple[float, float]] = [
+            (_jaccard(current.csg_products, other.csg_products), settings.PROJECT_SIMILARITY_META_WEIGHT_CSG_PRODUCTS),
+            (
+                _ordinal_score(COMPLEXITY_ORDER, current.integration_complexity, other.integration_complexity),
+                settings.PROJECT_SIMILARITY_META_WEIGHT_INTEGRATION_COMPLEXITY,
+            ),
+            (_ordinal_score(SIZE_ORDER, current.project_size, other.project_size), settings.PROJECT_SIMILARITY_META_WEIGHT_PROJECT_SIZE),
+            (
+                _ordinal_score(PROJECT_COMPLEXITY_ORDER, current.project_complexity, other.project_complexity),
+                settings.PROJECT_SIMILARITY_META_WEIGHT_PROJECT_COMPLEXITY,
+            ),
+            (1.0 if (current.csg_role and current.csg_role == other.csg_role) else 0.0, settings.PROJECT_SIMILARITY_META_WEIGHT_CSG_ROLE),
+            (
+                1.0 if (current.client_type and current.client_type == other.client_type) else 0.0,
+                settings.PROJECT_SIMILARITY_META_WEIGHT_CLIENT_TYPE,
+            ),
+            (_date_proximity_score(current.date_range, other.date_range), settings.PROJECT_SIMILARITY_META_WEIGHT_DATE_RANGE),
+        ]
+        wsum = sum(w for _, w in pairs)
+        if wsum <= 0:
+            return 0.5
+        return sum(s * w for s, w in pairs) / wsum
 
     @staticmethod
     def _cosine_similarity(a: List[float], b: List[float]) -> float:
@@ -143,6 +177,15 @@ class ProjectSimilarityService:
         """
         top_k = top_k or self._top_k
         exclude_project_names = exclude_project_names or []
+        cache_key = self._cache_key(project_name, top_k, exclude_project_names, force_project)
+        ttl = getattr(settings, "PROJECT_SIMILARITY_CACHE_TTL_SECONDS", 300.0)
+        now = time.monotonic()
+        cached = self._similarity_cache.get(cache_key)
+        if cached is not None:
+            results, ts = cached
+            if now - ts < ttl:
+                return copy.deepcopy(results)
+
         if force_project:
             force_name = force_project.get("project_name")
             force_customer = force_project.get("customer", "")
@@ -168,7 +211,8 @@ class ProjectSimilarityService:
             result = []
 
         if not candidates:
-            return result
+            self._similarity_cache[cache_key] = (copy.deepcopy(result), now)
+            return copy.deepcopy(result)
 
         current_embedding = await self._get_project_embedding(project_name, vector_store)
         scores_list: List[tuple] = []
@@ -199,4 +243,21 @@ class ProjectSimilarityService:
                 "metadata": proj,
             })
 
+        self._similarity_cache[cache_key] = (copy.deepcopy(result), now)
+        # Bound cache size
+        if len(self._similarity_cache) > 128:
+            oldest_key = min(self._similarity_cache.keys(), key=lambda k: self._similarity_cache[k][1])
+            self._similarity_cache.pop(oldest_key, None)
+
         return result
+
+
+_shared_similarity_service: Optional["ProjectSimilarityService"] = None
+
+
+def get_shared_project_similarity_service() -> "ProjectSimilarityService":
+    """Single process-wide instance so cache invalidation from uploads/metadata applies to query path."""
+    global _shared_similarity_service
+    if _shared_similarity_service is None:
+        _shared_similarity_service = ProjectSimilarityService()
+    return _shared_similarity_service

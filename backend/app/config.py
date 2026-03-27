@@ -39,10 +39,20 @@ class Settings(BaseSettings):
     SIMILAR_PROJECTS_COUNT: int = 3
     PROJECT_SIMILARITY_SEMANTIC_WEIGHT: float = 0.5
     PROJECT_SIMILARITY_METADATA_WEIGHT: float = 0.5
+    # Per-field weights for metadata half of hybrid score (should sum to 1.0)
+    PROJECT_SIMILARITY_META_WEIGHT_CSG_PRODUCTS: float = 0.20
+    PROJECT_SIMILARITY_META_WEIGHT_INTEGRATION_COMPLEXITY: float = 0.15
+    PROJECT_SIMILARITY_META_WEIGHT_PROJECT_SIZE: float = 0.10
+    PROJECT_SIMILARITY_META_WEIGHT_PROJECT_COMPLEXITY: float = 0.15
+    PROJECT_SIMILARITY_META_WEIGHT_CSG_ROLE: float = 0.15
+    PROJECT_SIMILARITY_META_WEIGHT_CLIENT_TYPE: float = 0.15
+    PROJECT_SIMILARITY_META_WEIGHT_DATE_RANGE: float = 0.10
+    # Cache TTL for find_similar_projects (seconds); cleared on metadata writes
+    PROJECT_SIMILARITY_CACHE_TTL_SECONDS: float = 300.0
     PROJECT_METADATA_DB_PATH: str = "data/project_metadata.db"
     
     # File Upload Settings
-    MAX_UPLOAD_SIZE: int = 10 * 1024 * 1024  # 10MB
+    MAX_UPLOAD_SIZE: int = 50 * 1024 * 1024  # 50MB
     ALLOWED_EXTENSIONS: List[str] = [".docx", ".xlsx"]
     
     class Config:

@@ -95,6 +95,10 @@ npm install
 npm run dev
 ```
 
+Open **http://localhost:5173** (Vite dev server). The app proxies `/api` to `http://localhost:8000`, so run the backend locally or ensure it is reachable.
+
+**Note:** Docker Compose serves the built frontend on **http://localhost:3000**. If `npm run dev` used to fail with **port already in use**, that was often a clash on port 3000—the dev server now defaults to **5173**. If 5173 is busy, Vite will try the next free port (`strictPort: false`).
+
 ### Running Tests
 
 **Backend:**

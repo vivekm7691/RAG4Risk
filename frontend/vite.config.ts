@@ -5,7 +5,9 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   server: {
-    port: 3000,
+    // 5173 is Vite's default; avoids clashing with Docker Compose (frontend often maps host :3000).
+    port: 5173,
+    strictPort: false,
     host: true,
     proxy: {
       '/api': {
