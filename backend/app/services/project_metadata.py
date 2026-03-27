@@ -93,6 +93,17 @@ class ProjectMetadataService:
             conn.close()
         return self.get_project_metadata(data.project_name)
 
+    def ensure_default_metadata(self, project_name: str, customer_fallback: str) -> Optional[ProjectMetadata]:
+        """
+        If no metadata row exists for project_name, create a minimal row so similarity / past-projects
+        features have a baseline (customer from document title or project name).
+        """
+        if self.get_project_metadata(project_name):
+            return None
+        customer = (customer_fallback or "").strip() or project_name
+        dto = ProjectMetadataCreateUpdate(project_name=project_name, customer=customer)
+        return self.create_or_update_project_metadata(dto)
+
     def get_project_metadata(self, project_name: str) -> Optional[ProjectMetadata]:
         """Get project metadata by project name."""
         conn = sqlite3.connect(self.db_path)

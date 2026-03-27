@@ -1,6 +1,7 @@
 """Document upload and management API routes"""
 
 import json
+import logging
 import os
 import uuid
 from datetime import datetime
@@ -23,7 +24,10 @@ from app.services.excel_parser import ExcelParser
 from app.services.chunker import Chunker
 from app.services.embeddings import EmbeddingService
 from app.services.vector_store import get_vector_store
+from app.services.project_similarity import get_shared_project_similarity_service
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -182,9 +186,20 @@ async def upload_document(
                         meta_dict["customer"] = project_name  # fallback
                     meta_dto = ProjectMetadataCreateUpdate(**meta_dict)
                     project_metadata_service.create_or_update_project_metadata(meta_dto)
+                    get_shared_project_similarity_service().clear_similarity_cache()
                 except (json.JSONDecodeError, Exception) as e:
                     import logging
                     logging.getLogger(__name__).warning("Optional project_metadata ignored: %s", e)
+            else:
+                title_hint = (
+                    file_metadata.get("title")
+                    or file_metadata.get("file_name")
+                    or project_name
+                )
+                if project_metadata_service.ensure_default_metadata(project_name, title_hint):
+                    get_shared_project_similarity_service().clear_similarity_cache()
+
+            get_shared_project_similarity_service().clear_project_embedding(project_name)
             
             # Prepare response message
             if row_count is not None:
@@ -267,8 +282,12 @@ async def list_documents(project_name: Optional[str] = None):
                 "metadatas": [{k: v for k, v in point.payload.items() if k != "text"} for point in points]
             }
         except Exception as e:
-            # If collection is empty or query fails, return empty list
-            return []
+            # Empty collection does not throw; failures here are connectivity/schema issues.
+            logger.exception("list_documents: Qdrant scroll failed")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Vector store unavailable, cannot list documents: {e!s}",
+            )
         
         # Extract unique documents from chunks
         documents_map = {}

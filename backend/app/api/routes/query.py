@@ -3,7 +3,7 @@
 import json
 import time
 import logging
-from typing import Optional
+from typing import Optional, List, Any, Dict
 
 from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -41,6 +41,27 @@ def _context_weighting_from_request(request: QueryRequest):
     return settings.DEFAULT_CURRENT_PROJECT_WEIGHT, settings.DEFAULT_PAST_PROJECTS_WEIGHT
 
 
+def _similar_projects_to_preview(raw: Optional[List[Dict[str, Any]]]) -> Optional[List[SimilarProjectPreview]]:
+    if not raw:
+        return None
+    out: List[SimilarProjectPreview] = []
+    for sp in raw:
+        meta = sp.get("metadata")
+        if meta is not None and hasattr(meta, "model_dump"):
+            meta = meta.model_dump(mode="json")
+        elif meta is not None and not isinstance(meta, dict):
+            meta = None
+        out.append(
+        SimilarProjectPreview(
+            project_name=sp["project_name"],
+            customer=sp.get("customer"),
+            similarity_score=float(sp.get("similarity_score", 0.0)),
+            metadata=meta,
+        )
+        )
+    return out
+
+
 @router.post("/retrieve-preview", response_model=RetrievalPreviewResponse, status_code=status.HTTP_200_OK)
 async def retrieve_preview(request: QueryRequest):
     """
@@ -75,7 +96,11 @@ async def retrieve_preview(request: QueryRequest):
             project_name=sp["project_name"],
             customer=sp.get("customer"),
             similarity_score=sp.get("similarity_score", 0.0),
-            metadata=sp.get("metadata").model_dump() if hasattr(sp.get("metadata"), "model_dump") else (sp.get("metadata") or {}),
+            metadata=(
+                sp.get("metadata").model_dump(mode="json")
+                if hasattr(sp.get("metadata"), "model_dump")
+                else (sp.get("metadata") or {})
+            ),
         )
         for sp in result["similar_projects"]
     ]
@@ -157,7 +182,7 @@ async def query_documents(request: QueryRequest):
                 sources=[],
                 query=request.query,
                 project_name=request.project_name,
-                similar_projects=[sp.get("project_name") for sp in (similar_projects_result or [])] or None,
+                similar_projects=_similar_projects_to_preview(similar_projects_result),
             )
 
         format_start = time.time()
@@ -206,7 +231,7 @@ async def query_documents(request: QueryRequest):
             sources=sources,
             query=request.query,
             project_name=request.project_name,
-            similar_projects=[sp.get("project_name") for sp in (similar_projects_result or [])] or None,
+            similar_projects=_similar_projects_to_preview(similar_projects_result),
         )
         
     except Exception as e:
@@ -346,7 +371,9 @@ async def query_documents_stream(request: QueryRequest):
                 "project_name": request.project_name,
             }
             if similar_projects_stream:
-                sources_data["similar_projects"] = [sp.get("project_name") for sp in similar_projects_stream]
+                rich = _similar_projects_to_preview(similar_projects_stream)
+                if rich:
+                    sources_data["similar_projects"] = [p.model_dump(mode="json") for p in rich]
             yield f"data: {json.dumps(sources_data)}\n\n"
             
             # Generate streaming response using RAG (now async)

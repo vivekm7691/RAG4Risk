@@ -291,6 +291,23 @@ curl -s -X POST "http://localhost:8000/api/query/retrieve-preview" \
 
 ---
 
+## Frontend (Task 10) — `ChatInterface`
+
+The web UI lives at [`frontend/src/components/ChatInterface.tsx`](../frontend/src/components/ChatInterface.tsx).
+
+1. Start backend + frontend (e.g. `docker-compose up -d` and `cd frontend && npm run dev`, or your usual setup). Ensure `VITE_API_BASE_URL` points at the API if not using `http://localhost:8000`.
+2. Open the app (Vite default: `http://localhost:5173`).
+3. **Without past projects:** Leave “Include similar past projects” unchecked, enter **Project name** (optional for retrieval filter), enter a question, click **Send (stream)** — answer streams; sources show with **Past** badge when applicable.
+4. **With past projects:** Check **Include similar past projects**, enter **Project name** (required), optionally adjust **Advanced** sliders and **Force-select past project**, click **Get retrieval preview** — review similar projects and chunks; uncheck chunks to exclude; click **Confirm & run query (stream)** — LLM runs only after confirmation. **Cancel** clears the preview without calling the LLM.
+
+| UI feature | Backend |
+|------------|---------|
+| Retrieval preview | `POST /api/query/retrieve-preview` |
+| Stream after confirm | `POST /api/query/stream` with `include_past_projects`, `exclude_chunk_ids`, `force_project`, `context_weighting` |
+| Force project dropdown | `GET /api/projects` |
+
+---
+
 ## Quick checklist
 
 | Step | What to verify |
@@ -306,6 +323,7 @@ curl -s -X POST "http://localhost:8000/api/query/retrieve-preview" \
 | 7 | Stream response includes sources (with chunk_id, is_past_project) then chunks then done |
 | 8 | Upload with project_metadata creates/updates project metadata |
 | 9 | Context weighting changes proportion of current vs past chunks in preview |
+| 10 | Frontend: preview → confirm → stream; exclude chunks; force project optional |
 
 ---
 

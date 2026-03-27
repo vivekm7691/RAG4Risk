@@ -15,6 +15,10 @@ from datetime import datetime
 BASE_URL = "http://localhost:8000"
 API_BASE = f"{BASE_URL}/api"
 
+# Timeout for streaming request: (connect, read). Read must be >= backend OLLAMA_TIMEOUT (1200s).
+STREAM_CONNECT_TIMEOUT = 60
+STREAM_READ_TIMEOUT = 1300  # ~22 min; backend uses 1200s for LLM
+
 
 def format_context(chunks: List[Dict[str, Any]], project_name: Optional[str] = None) -> str:
     """Format retrieved chunks as context text (same logic as RAGService._format_context)."""
@@ -35,6 +39,50 @@ def format_context(chunks: List[Dict[str, Any]], project_name: Optional[str] = N
         source_info += f"]"
         context_parts.append(f"{source_info}\n{chunk_text}")
     return "\n\n---\n\n".join(context_parts)
+
+
+def format_context_like_llm(
+    chunks: List[Dict[str, Any]], project_name: Optional[str] = None
+) -> str:
+    """
+    Format chunks exactly as RAGService._format_context does for the LLM.
+    Includes Phase 3.5 grouping: "Context from Current Project" and "Context from Similar Past Projects".
+    """
+    current_chunks = []
+    past_chunks = []  # list of (project_label, chunk_text, source_info)
+    for idx, chunk in enumerate(chunks, 1):
+        metadata = chunk.get("metadata", {})
+        chunk_text = chunk.get("text", "")
+        doc_name = metadata.get("file_name", "Unknown document")
+        doc_type = metadata.get("document_type", "")
+        pname = metadata.get("project_name", "")
+        source_info = f"[Source {idx}: {doc_name}"
+        if doc_type in ["risk register", "issue log"]:
+            row_num = metadata.get("row_number")
+            sheet_name = metadata.get("sheet_name")
+            if row_num:
+                source_info += f", Row {row_num}"
+            if sheet_name:
+                source_info += f", Sheet: {sheet_name}"
+        source_info += "]"
+        if chunk.get("is_past_project"):
+            past_chunks.append((pname or "Past project", chunk_text, source_info))
+        else:
+            current_chunks.append(f"{source_info}\n{chunk_text}")
+
+    if not past_chunks:
+        return "\n\n---\n\n".join(current_chunks)
+
+    parts = []
+    if current_chunks:
+        label = f"Context from Current Project ({project_name or 'current'}):"
+        parts.append(label)
+        parts.append("\n\n".join(current_chunks))
+    if past_chunks:
+        parts.append("Context from Similar Past Projects:")
+        for proj_label, text, src in past_chunks:
+            parts.append(f"  [{proj_label}] - {src}\n{text}")
+    return "\n\n---\n\n".join(parts)
 
 
 def build_rag_prompt(query: str, context: str, project_name: Optional[str] = None) -> str:
@@ -127,7 +175,9 @@ def get_vector_search_results(
 ) -> tuple[List[Dict[str, Any]], Optional[str]]:
     """
     Get full chunks from vector search when not using past projects.
-    Uses diagnostics endpoint with include_chunks=True, or falls back to query endpoint.
+    Uses diagnostics endpoint (no LLM) when possible; only falls back to POST /api/query
+    when filters are set. If diagnostics fails and no filters, returns empty and lets
+    the stream provide sources (avoids 500 from non-streaming query when Ollama is down).
     """
     try:
         params = {"query": query, "top_k": top_k, "include_chunks": "true"}
@@ -148,8 +198,14 @@ def get_vector_search_results(
                             for c in data["chunks"]
                         ]
                         return chunks, None
-            except Exception:
-                pass
+                    if data.get("success") and not data.get("chunks"):
+                        return [], None  # No chunks; stream will show empty or from stream
+                    # success False or error
+                    err = data.get("error") or f"success={data.get('success')}"
+                    return [], f"Diagnostics vector-search failed: {err}"
+            except requests.exceptions.RequestException as e:
+                return [], f"Diagnostics request failed: {e}"
+        # With filters we must use POST /api/query (diagnostics has no filters)
         query_data = {"query": query, "top_k": top_k}
         if project_name:
             query_data["project_name"] = project_name
@@ -157,7 +213,12 @@ def get_vector_search_results(
             query_data["filters"] = filters
         r = requests.post(f"{API_BASE}/query", json=query_data, timeout=300)
         if r.status_code != 200:
-            return [], f"Preliminary query failed: {r.status_code}"
+            try:
+                err_body = r.json()
+                detail = err_body.get("detail", r.text)
+            except Exception:
+                detail = r.text
+            return [], f"Preliminary query failed: {r.status_code} – {detail}"
         result = r.json()
         sources = result.get("sources", [])
         chunks = []
@@ -177,9 +238,9 @@ def get_vector_search_results(
             })
         return chunks, None
     except requests.exceptions.RequestException as e:
-        return [], f"Network error: {str(e)}"
+        return [], f"Network error: {e}"
     except Exception as e:
-        return [], f"Unexpected error: {str(e)}"
+        return [], f"Unexpected error: {e}"
 
 
 def get_chunks_from_streaming_sources(sources_data: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -211,24 +272,18 @@ def display_query_parameters(query_data: Dict[str, Any]):
     print()
 
 
-def display_chunks(chunks: List[Dict[str, Any]]):
+def display_chunks(chunks: List[Dict[str, Any]], project_name: Optional[str] = None):
+    """Display chunks exactly as they are presented to the LLM (same format as RAGService._format_context)."""
     print("\n" + "=" * 80)
-    print("SECTION 2: FULL CHUNKS RETRIEVED (for investigation)")
+    print("SECTION 2: CHUNKS AS PRESENTED TO THE LLM")
     print("=" * 80)
     if not chunks:
         print("No chunks retrieved.")
         return
     print(f"Total chunks: {len(chunks)}")
-    for idx, chunk in enumerate(chunks, 1):
-        print(f"\n--- Chunk {idx} ---")
-        text = chunk.get("text", "N/A")
-        print(f"Text: {text[:500]}{'...' if len(text) > 500 else ''}" if len(text) > 300 else f"Text: {text}")
-        meta = chunk.get("metadata", {})
-        if meta.get("is_past_project"):
-            print("  [PAST PROJECT]")
-        for key, value in meta.items():
-            if value is not None and key != "text":
-                print(f"  {key}: {value}")
+    print("\nBelow is the exact context string passed to the LLM (source lines + chunk text only):\n")
+    context_str = format_context_like_llm(chunks, project_name)
+    print(context_str)
     print()
 
 
@@ -470,64 +525,72 @@ def test_streaming_query_phase35_e2e(
         if chunks_error:
             print(f"[WARN] {chunks_error}")
 
-    print("Making streaming query call...")
-    try:
-        response = requests.post(
-            f"{API_BASE}/query/stream",
-            json=query_data,
-            stream=True,
-            headers={"Accept": "text/event-stream"},
-            timeout=600,
-        )
-        if response.status_code != 200:
-            print(f"\n[ERROR] Query failed with status {response.status_code}")
-            try:
-                print(json.dumps(response.json(), indent=2))
-            except Exception:
-                print(response.text)
-            return
+    # --- TEMPORARY: LLM call commented out; only output retrieved chunks. Revert to re-enable. ---
+    display_chunks(chunks, project_name)
+    display_similar_projects(similar_projects_full, project_name)
+    print("\n[INFO] LLM call skipped (temporary). Revert comment block in test_streaming_query_phase35_e2e.py to re-enable.\n")
+    return
 
-        sources_data, response_text, done_data, error_message, _ = parse_sse_stream(response)
-        if not chunks and sources_data:
-            chunks = get_chunks_from_streaming_sources(sources_data)
-
-        display_chunks(chunks)
-
-        if chunks:
-            context_text = format_context(chunks, project_name)
-            prompt = build_rag_prompt(query, context_text, project_name)
-            display_prompt(prompt)
-        else:
-            print("\n" + "=" * 80)
-            print("SECTION 3: FINAL PROMPT SENT TO LLM (for investigation)")
-            print("=" * 80)
-            print("[No chunks available to build prompt]")
-            print()
-
-        if sources_data:
-            display_sources(sources_data.get("sources", []))
-
-        display_response(response_text)
-        if done_data:
-            display_timings(done_data.get("timings", {}))
-        else:
-            display_timings({})
-
-        display_similar_projects(similar_projects_full, project_name)
-        display_summary(error_message, sources_data, response_text, done_data)
-
-    except requests.exceptions.Timeout:
-        print("\n[ERROR] Request timed out")
-        print("Status: TIMEOUT")
-    except requests.exceptions.ConnectionError:
-        print("\n[ERROR] Cannot connect to backend. Is the server running?")
-        print("  Start with: docker-compose up -d")
-        print("Status: CONNECTION ERROR")
-    except Exception as e:
-        print(f"\n[ERROR] Unexpected error: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        print("Status: FAILED")
+    # --- COMMENTED OUT: streaming query and LLM-dependent output (revert by uncommenting below and removing early return above) ---
+    # print("Making streaming query call...")
+    # try:
+    #     response = requests.post(
+    #         f"{API_BASE}/query/stream",
+    #         json=query_data,
+    #         stream=True,
+    #         headers={"Accept": "text/event-stream"},
+    #         timeout=(STREAM_CONNECT_TIMEOUT, STREAM_READ_TIMEOUT),
+    #     )
+    #     if response.status_code != 200:
+    #         print(f"\n[ERROR] Query failed with status {response.status_code}")
+    #         try:
+    #             print(json.dumps(response.json(), indent=2))
+    #         except Exception:
+    #             print(response.text)
+    #         return
+    #
+    #     sources_data, response_text, done_data, error_message, _ = parse_sse_stream(response)
+    #     if not chunks and sources_data:
+    #         chunks = get_chunks_from_streaming_sources(sources_data)
+    #
+    #     display_chunks(chunks)
+    #
+    #     if chunks:
+    #         context_text = format_context(chunks, project_name)
+    #         prompt = build_rag_prompt(query, context_text, project_name)
+    #         display_prompt(prompt)
+    #     else:
+    #         print("\n" + "=" * 80)
+    #         print("SECTION 3: FINAL PROMPT SENT TO LLM (for investigation)")
+    #         print("=" * 80)
+    #         print("[No chunks available to build prompt]")
+    #         print()
+    #
+    #     if sources_data:
+    #         display_sources(sources_data.get("sources", []))
+    #
+    #     display_response(response_text)
+    #     if done_data:
+    #         display_timings(done_data.get("timings", {}))
+    #     else:
+    #         display_timings({})
+    #
+    #     display_similar_projects(similar_projects_full, project_name)
+    #     display_summary(error_message, sources_data, response_text, done_data)
+    #
+    # except requests.exceptions.Timeout:
+    #     print("\n[ERROR] Request timed out (connect or stream read)")
+    #     print("  If the LLM is slow, increase STREAM_READ_TIMEOUT in this script (backend uses 1200s).")
+    #     print("Status: TIMEOUT")
+    # except requests.exceptions.ConnectionError:
+    #     print("\n[ERROR] Cannot connect to backend. Is the server running?")
+    #     print("  Start with: docker-compose up -d")
+    #     print("Status: CONNECTION ERROR")
+    # except Exception as e:
+    #     print(f"\n[ERROR] Unexpected error: {str(e)}")
+    #     import traceback
+    #     traceback.print_exc()
+    #     print("Status: FAILED")
 
 
 def get_filters_from_args(args) -> Optional[Dict[str, Any]]:
