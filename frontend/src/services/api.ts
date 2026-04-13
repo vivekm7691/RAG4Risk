@@ -56,6 +56,24 @@ export interface ForceProjectSelection {
   project_name: string;
 }
 
+export interface PastProjectIntentSlots {
+  project_name: string;
+  budget: number;
+  slots: Record<string, number>;
+}
+
+/** Phase 3.75: returned when the server ran intent classification (see QUERY_INTENT_ENABLED). */
+export interface QueryIntentInfo {
+  intent_summary: string;
+  document_weights: Record<string, number>;
+  priority_order?: string[] | null;
+  used_fallback: boolean;
+  n_current_slots: number;
+  n_past_slots: number;
+  slots_current_project: Record<string, number>;
+  slots_past_by_project: PastProjectIntentSlots[];
+}
+
 export interface RetrievePreviewRequest {
   query: string;
   project_name?: string | null;
@@ -64,6 +82,8 @@ export interface RetrievePreviewRequest {
   context_weighting?: ContextWeighting;
   exclude_chunk_ids?: string[];
   force_project?: ForceProjectSelection;
+  /** When true and server enables intent, weighted per-type retrieval (requires project_name). */
+  use_query_intent?: boolean;
 }
 
 export interface SimilarProjectPreview {
@@ -87,6 +107,7 @@ export interface RetrievalPreviewResponse {
   chunks: PreviewChunk[];
   query: string;
   project_name?: string | null;
+  query_intent?: QueryIntentInfo | null;
 }
 
 export interface SourceCitation {
@@ -110,6 +131,8 @@ export interface QueryStreamRequest {
   context_weighting?: ContextWeighting;
   exclude_chunk_ids?: string[];
   force_project?: ForceProjectSelection;
+  /** When true and server enables intent, weighted per-type retrieval (requires project_name). */
+  use_query_intent?: boolean;
 }
 
 export interface ProjectMetadata {
@@ -309,6 +332,7 @@ export async function streamQuery(
           ? body.exclude_chunk_ids
           : undefined,
       force_project: body.force_project,
+      use_query_intent: body.use_query_intent ?? false,
     }),
   });
 

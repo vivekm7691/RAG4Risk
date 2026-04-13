@@ -31,7 +31,12 @@ class ContextWeighting(BaseModel):
 
 
 class QueryFilters(BaseModel):
-    """Metadata filters for Excel-based queries"""
+    """Metadata filters for Excel-based queries.
+
+    When set on QueryRequest, each non-null field is AND-combined with project_name
+    (and document_type when using intent-weighted retrieval). Sending filters that
+    do not match stored chunk metadata returns no vector hits even if the project exists.
+    """
     severity: Optional[str] = Field(None, description="Filter by severity level")
     status: Optional[str] = Field(None, description="Filter by status")
     category: Optional[str] = Field(None, description="Filter by category")
@@ -40,6 +45,41 @@ class QueryFilters(BaseModel):
         description="Filter by date range with 'start_date' and 'end_date' (ISO format)"
     )
     owner: Optional[str] = Field(None, description="Filter by owner/assignee")
+
+
+def metadata_filters_for_vector_search(filters: QueryFilters) -> Optional[Dict[str, Any]]:
+    """
+    Dict for Qdrant filter building. Drops empty strings and common OpenAPI/Swagger example
+    values so literal OpenAPI example "string" placeholders are not AND-ed with project/doc_type
+    (which would yield zero hits for chunks without Excel metadata).
+    """
+    raw = filters.model_dump(exclude_none=True)
+    if not raw:
+        return None
+    out: Dict[str, Any] = {}
+    skip_str = frozenset(("", "string"))
+
+    for key, val in raw.items():
+        if key == "date_range" and isinstance(val, dict):
+            dr: Dict[str, str] = {}
+            for dk, dv in val.items():
+                if dv is None or not isinstance(dv, str):
+                    continue
+                s = dv.strip()
+                if not s or s.lower() in skip_str:
+                    continue
+                dr[dk] = s
+            if "start_date" in dr or "end_date" in dr:
+                out["date_range"] = dr
+            continue
+        if isinstance(val, str):
+            s = val.strip()
+            if not s or s.lower() in skip_str:
+                continue
+            out[key] = s
+        else:
+            out[key] = val
+    return out if out else None
 
 
 class QueryRequest(BaseModel):
@@ -70,6 +110,31 @@ class QueryRequest(BaseModel):
         None,
         description="Force-select this past project (customer + project_name) at query time"
     )
+    use_query_intent: bool = Field(
+        False,
+        description="When true and server QUERY_INTENT_ENABLED, run intent LLM and weighted per-type retrieval (requires project_name)",
+    )
+
+
+class PastProjectIntentSlots(BaseModel):
+    """Per similar project: slot budget and document-type allocation (Phase 3.75)."""
+
+    project_name: str
+    budget: int = Field(..., ge=0, description="Retrieval slots assigned to this past project")
+    slots: Dict[str, int] = Field(default_factory=dict, description="Per document_type top_k split for this budget")
+
+
+class QueryIntentInfo(BaseModel):
+    """Intent LLM output and resolved per-type top_k allocations for preview and responses."""
+
+    intent_summary: str = ""
+    document_weights: Dict[str, float] = Field(default_factory=dict)
+    priority_order: Optional[List[str]] = None
+    used_fallback: bool = False
+    n_current_slots: int = Field(0, description="Rounded current-project slice of top_k")
+    n_past_slots: int = Field(0, description="Rounded past-project slice of top_k")
+    slots_current_project: Dict[str, int] = Field(default_factory=dict)
+    slots_past_by_project: List[PastProjectIntentSlots] = Field(default_factory=list)
 
 
 class SimilarProjectPreview(BaseModel):
@@ -90,6 +155,10 @@ class QueryResponse(BaseModel):
         None,
         description="Similar past projects used for context (scores + metadata when available)",
     )
+    query_intent: Optional[QueryIntentInfo] = Field(
+        None,
+        description="Phase 3.75: intent summary, weights, and per-type slot counts when use_query_intent was applied",
+    )
 
 
 # Phase 3.5: Retrieval preview (no LLM call)
@@ -109,6 +178,7 @@ class RetrievalPreviewResponse(BaseModel):
     chunks: List[PreviewChunk]
     query: str
     project_name: Optional[str] = None
+    query_intent: Optional[QueryIntentInfo] = None
 
 
 # Streaming response models (for documentation and type hints)
@@ -125,6 +195,7 @@ class StreamingSources(BaseModel):
     query: str
     project_name: Optional[str] = None
     similar_projects: Optional[List[SimilarProjectPreview]] = None
+    query_intent: Optional[QueryIntentInfo] = None
 
 
 class StreamingDone(BaseModel):

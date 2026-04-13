@@ -82,3 +82,14 @@ async def startup_event():
         # Don't fail startup - model will be loaded on first use
         logger.warning("Model will be loaded on first request, which may cause httpx client closure issues")
 
+    try:
+        from app.services.vector_store import get_vector_store
+
+        vs = await get_vector_store()
+        await vs.ensure_filter_payload_indexes()
+    except Exception as e:
+        logger.warning(
+            "Could not ensure Qdrant filter payload indexes (ok if Qdrant is unreachable until it is up): %s",
+            e,
+        )
+

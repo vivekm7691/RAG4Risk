@@ -16,12 +16,20 @@ services:
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
       - QDRANT_COLLECTION_NAME=${QDRANT_COLLECTION_NAME:-rag4risk_documents}
+      - QDRANT_SEARCH_HNSW_EF=${QDRANT_SEARCH_HNSW_EF:-128}
       - CHUNK_SIZE=${CHUNK_SIZE:-1000}
       - CHUNK_OVERLAP=${CHUNK_OVERLAP:-200}
       - TOP_K=${TOP_K:-5}
       # SSL Configuration for HuggingFace model downloads
       # Set HF_HUB_DISABLE_SSL_VERIFY=true if you have corporate proxy with self-signed certificates
       - HF_HUB_DISABLE_SSL_VERIFY=${HF_HUB_DISABLE_SSL_VERIFY:-false}
+      # Phase 3.75: Query Intent
+      - QUERY_INTENT_ENABLED=${QUERY_INTENT_ENABLED:-true}
+      - INTENT_LLM_BASE_URL=${INTENT_LLM_BASE_URL:-}
+      - INTENT_LLM_MODEL=${INTENT_LLM_MODEL:-deepseek-r1}
+      - INTENT_LLM_TIMEOUT_SECONDS=${INTENT_LLM_TIMEOUT_SECONDS:-1200}
+      - INTENT_LLM_MAX_TOKENS=${INTENT_LLM_MAX_TOKENS:-4096}
+      - INTENT_LLM_TEMPERATURE=${INTENT_LLM_TEMPERATURE:-0.1}
     volumes:
       - ./backend:/app
       - backend_data:/app/data

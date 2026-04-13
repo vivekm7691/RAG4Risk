@@ -1,7 +1,9 @@
 """Configuration management for RAG4Risk"""
 
-from pydantic_settings import BaseSettings
 from typing import List
+
+from pydantic import AliasChoices, Field
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
@@ -16,6 +18,19 @@ class Settings(BaseSettings):
     OLLAMA_MODEL: str = "llama3.2:3b"
     OLLAMA_TIMEOUT: float = 1200.0  # 20 minutes timeout for LLM responses
     OLLAMA_STREAMING_ENABLED: bool = True  # Enable streaming responses by default
+
+    # Phase 3.75: query intent LLM (Ollama /api/chat). Empty base URL falls back to OLLAMA_BASE_URL.
+    INTENT_LLM_BASE_URL: str = ""
+    INTENT_LLM_MODEL: str = "deepseek-r1"
+    # Accept INTENT_LLM_TIMEOUT (plan name) or INTENT_LLM_TIMEOUT_SECONDS
+    INTENT_LLM_TIMEOUT_SECONDS: float = Field(
+        default=1200.0,
+        validation_alias=AliasChoices("INTENT_LLM_TIMEOUT_SECONDS", "INTENT_LLM_TIMEOUT"),
+    )
+    INTENT_LLM_MAX_TOKENS: int = 4096
+    INTENT_LLM_TEMPERATURE: float = 0.1
+    # When False, ignore client use_query_intent (no intent LLM / weighted retrieval).
+    QUERY_INTENT_ENABLED: bool = False
     
     # Embedding Settings
     EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
@@ -27,6 +42,8 @@ class Settings(BaseSettings):
     QDRANT_HOST: str = "localhost"
     QDRANT_PORT: int = 6333
     QDRANT_COLLECTION_NAME: str = "rag4risk_documents"
+    # Higher ef improves recall for filtered ANN; omit when unset or <= 0
+    QDRANT_SEARCH_HNSW_EF: int = 128
     
     # Chunking Settings
     CHUNK_SIZE: int = 1000
