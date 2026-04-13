@@ -1,6 +1,6 @@
 """Vector store service for Qdrant database integration"""
 
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 from datetime import datetime
 import hashlib
 import json
@@ -10,6 +10,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 from qdrant_client import AsyncQdrantClient
+from qdrant_client.http.exceptions import UnexpectedResponse
 from qdrant_client.models import (
     Distance,
     VectorParams,
@@ -19,10 +20,24 @@ from qdrant_client.models import (
     MatchValue,
     Range,
     CollectionStatus,
+    PayloadSchemaType,
+    SearchParams,
 )
 
 from app.config import settings
 from app.models.document import DocumentType as DocType
+
+# Payload fields used in scroll/search filters; KEYWORD indexes improve filtered ANN recall.
+_FILTER_PAYLOAD_INDEX_FIELDS = (
+    ("project_name", PayloadSchemaType.KEYWORD),
+    ("document_type", PayloadSchemaType.KEYWORD),
+    ("content_hash", PayloadSchemaType.KEYWORD),
+    ("document_id", PayloadSchemaType.KEYWORD),
+    ("severity", PayloadSchemaType.KEYWORD),
+    ("status", PayloadSchemaType.KEYWORD),
+    ("category", PayloadSchemaType.KEYWORD),
+    ("owner", PayloadSchemaType.KEYWORD),
+)
 
 # Singleton instance
 _vector_store_instance: Optional['VectorStore'] = None
@@ -74,6 +89,64 @@ class VectorStore:
         if not self._initialized:
             # Just mark as initialized, we'll create clients on-demand
             self._initialized = True
+
+    async def _create_filter_payload_indexes(self, client: AsyncQdrantClient) -> None:
+        """Create keyword payload indexes for fields used in query filters (idempotent)."""
+        for field_name, field_schema in _FILTER_PAYLOAD_INDEX_FIELDS:
+            try:
+                await client.create_payload_index(
+                    collection_name=self.collection_name,
+                    field_name=field_name,
+                    field_schema=field_schema,
+                    wait=True,
+                )
+                logger.info(
+                    "Qdrant payload index ready: collection=%s field=%s",
+                    self.collection_name,
+                    field_name,
+                )
+            except UnexpectedResponse as e:
+                body = getattr(e, "content", b"") or b""
+                text = body.decode(errors="replace") if isinstance(body, (bytes, bytearray)) else str(e)
+                low = text.lower()
+                if e.status_code in (400, 409) and (
+                    "already exists" in low or "already exist" in low or "duplicate" in low
+                ):
+                    logger.debug("Qdrant payload index already present: %s", field_name)
+                    continue
+                logger.warning(
+                    "Qdrant create_payload_index failed for %s: %s %s",
+                    field_name,
+                    e.status_code,
+                    text[:200],
+                )
+            except Exception as e:
+                low = str(e).lower()
+                if "already" in low or "duplicate" in low:
+                    logger.debug("Qdrant payload index already present: %s", field_name)
+                    continue
+                logger.warning(
+                    "Qdrant create_payload_index failed for %s: %s",
+                    field_name,
+                    e,
+                )
+
+    async def ensure_filter_payload_indexes(self) -> None:
+        """If the collection exists, ensure filter payload indexes exist (startup / migration)."""
+        await self._ensure_initialized()
+        client = await self._get_client()
+        try:
+            collections = await client.get_collections()
+            exists = any(c.name == self.collection_name for c in collections.collections)
+            if not exists:
+                logger.debug(
+                    "Skipping Qdrant payload indexes; collection %s does not exist yet",
+                    self.collection_name,
+                )
+                return
+            await self._create_filter_payload_indexes(client)
+        finally:
+            logger.debug("Leaving client open for garbage collection")
     
     async def _ensure_collection_exists(self, embedding_dim: int):
         """Ensure collection exists with correct vector dimension"""
@@ -105,6 +178,13 @@ class VectorStore:
                     )
                 )
                 logger.info(f"Collection created successfully: {self.collection_name}")
+
+            # Filter payload indexes (new + existing collections) for reliable filtered ANN
+            if any(
+                col.name == self.collection_name
+                for col in (await client.get_collections()).collections
+            ):
+                await self._create_filter_payload_indexes(client)
         except Exception as e:
             logger.error(
                 f"Error in _ensure_collection_exists: {type(e).__name__}: {str(e)}",
@@ -311,27 +391,31 @@ class VectorStore:
         )
         
         try:
-            logger.info(f"Starting vector search: collection={self.collection_name}, top_k={top_k}, has_filter={qdrant_filter is not None}")
+            logger.info(
+                "Starting vector search: collection=%s, top_k=%d, has_filter=%s, project=%r, doc_type=%r",
+                self.collection_name, top_k, qdrant_filter is not None, project_name, document_type,
+            )
             
             # Get a fresh client for this operation
             client = await self._get_client()
-            logger.debug(f"Client obtained, type: {type(client)}, id: {id(client)}")
             
             try:
-                # Perform search using query_points() method for vector search
-                logger.debug(f"Calling client.query_points() with collection={self.collection_name}, vector_dim={len(query_embedding)}")
-                
+                search_params = None
+                ef = getattr(settings, "QDRANT_SEARCH_HNSW_EF", 128)
+                if isinstance(ef, (int, float)) and ef > 0:
+                    search_params = SearchParams(hnsw_ef=int(ef))
                 # Use query_points for vector search - it accepts vector list directly
                 query_response = await client.query_points(
                     collection_name=self.collection_name,
-                    query=query_embedding,  # Pass vector list directly (list[float])
+                    query=query_embedding,
                     query_filter=qdrant_filter if qdrant_filter else None,
-                    limit=top_k
+                    search_params=search_params,
+                    limit=top_k,
                 )
                 
                 # Extract points from response (query_response.points is a list of ScoredPoint objects)
                 search_results = query_response.points
-                logger.info(f"Search completed successfully, found {len(search_results)} results")
+                logger.info("Search completed: %d results", len(search_results))
             except Exception as search_error:
                 logger.error(
                     f"Error during client.query_points(): {type(search_error).__name__}: {str(search_error)}",
@@ -490,6 +574,18 @@ class VectorStore:
             return chunks
         except Exception as e:
             raise RuntimeError(f"Failed to get chunks by project: {str(e)}")
+
+    async def distinct_document_types_for_project(
+        self, project_name: str, limit: int = 5000
+    ) -> List[str]:
+        """Distinct non-empty document_type values seen under project_name (scan up to limit chunks)."""
+        chunks = await self.get_chunks_by_project(project_name, limit=limit)
+        seen: Set[str] = set()
+        for c in chunks:
+            dt = (c.get("metadata") or {}).get("document_type")
+            if isinstance(dt, str) and dt.strip():
+                seen.add(dt.strip())
+        return sorted(seen)
     
     async def clear_collection(self) -> bool:
         """

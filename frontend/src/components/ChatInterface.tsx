@@ -36,6 +36,8 @@ export function ChatInterface() {
   const [queryText, setQueryText] = useState('');
   const [topK, setTopK] = useState(10);
   const [includePastProjects, setIncludePastProjects] = useState(false);
+  /** Phase 3.75: send use_query_intent when a project is selected (server needs QUERY_INTENT_ENABLED). */
+  const [useQueryIntent, setUseQueryIntent] = useState(false);
   const [currentWeight, setCurrentWeight] = useState(0.7);
   const [pastWeight, setPastWeight] = useState(0.3);
   const [forceSelect, setForceSelect] = useState('');
@@ -112,6 +114,8 @@ export function ChatInterface() {
 
   const forceProject = parseForceValue(forceSelect);
 
+  const intentActive = useQueryIntent && Boolean(projectName.trim());
+
   const runRetrievalPreview = useCallback(async () => {
     setError(null);
     if (!projectName.trim()) {
@@ -127,6 +131,7 @@ export function ChatInterface() {
         include_past_projects: true,
         context_weighting: contextWeighting,
         force_project: forceProject,
+        use_query_intent: intentActive,
       });
       setPreview(data);
       setExcludedChunkIds(new Set());
@@ -142,7 +147,7 @@ export function ChatInterface() {
     } finally {
       setLoadingPreview(false);
     }
-  }, [projectName, queryText, topK, contextWeighting, forceProject]);
+  }, [projectName, queryText, topK, contextWeighting, forceProject, intentActive]);
 
   const executeStream = useCallback(
     async (excludeIds: string[]) => {
@@ -171,6 +176,7 @@ export function ChatInterface() {
           context_weighting: includePastProjects ? contextWeighting : undefined,
           exclude_chunk_ids: excludeIds.length > 0 ? excludeIds : undefined,
           force_project: includePastProjects ? forceProject : undefined,
+          use_query_intent: intentActive,
         },
         {
           onSources: (sources, similarProjects) => {
@@ -243,12 +249,17 @@ export function ChatInterface() {
       contextWeighting,
       forceProject,
       ollamaModel,
+      intentActive,
     ]
   );
 
   const handleSend = async () => {
     if (!queryText.trim()) {
       setError('Enter a question.');
+      return;
+    }
+    if (useQueryIntent && !projectName.trim()) {
+      setError('Select a project to use query intent (weighted retrieval by document type).');
       return;
     }
     if (includePastProjects && !projectName.trim()) {
@@ -362,6 +373,21 @@ export function ChatInterface() {
             Include similar past projects
           </label>
         </div>
+
+        <div className="chat-row">
+          <label>
+            <input
+              type="checkbox"
+              checked={useQueryIntent}
+              onChange={(e) => setUseQueryIntent(e.target.checked)}
+            />
+            Use query intent (per-document-type weights)
+          </label>
+        </div>
+        <p className="chat-field-hint" style={{ fontSize: '0.75rem', marginTop: -4, marginBottom: 8 }}>
+          Runs the intent model when <code>QUERY_INTENT_ENABLED</code> is set on the API. Requires a project
+          above; splits <code>top_k</code> across document types (SOW, solution description, etc.).
+        </p>
 
         <div className="chat-field">
           <span>Ollama model (LLM)</span>
@@ -480,6 +506,17 @@ export function ChatInterface() {
             Review similar projects and chunks. Uncheck a chunk to exclude it from context. Then confirm
             to run the streaming query.
           </p>
+
+          {preview.query_intent && (
+            <div className="preview-section" style={{ marginBottom: '1rem' }}>
+              <h4>Query intent</h4>
+              <p style={{ fontSize: '0.9rem', marginTop: 0 }}>{preview.query_intent.intent_summary}</p>
+              <p style={{ fontSize: '0.8rem', color: '#666', marginBottom: 4 }}>Slots (current project)</p>
+              <pre className="metadata-json" style={{ fontSize: '0.75rem' }}>
+                {JSON.stringify(preview.query_intent.slots_current_project, null, 2)}
+              </pre>
+            </div>
+          )}
 
           <div className="preview-section">
             <h4>Similar projects</h4>
