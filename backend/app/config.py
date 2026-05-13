@@ -16,8 +16,10 @@ class Settings(BaseSettings):
     # Ollama Settings
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "llama3.2:3b"
-    OLLAMA_TIMEOUT: float = 1200.0  # 20 minutes timeout for LLM responses
+    OLLAMA_TIMEOUT: float = 3000.0  # 50 minutes — httpx timeout for RAG Ollama /api/generate
     OLLAMA_STREAMING_ENABLED: bool = True  # Enable streaming responses by default
+    # Context window tokens passed to Ollama as options.num_ctx (RAG /api/generate and intent /api/chat). Use 0 to omit.
+    OLLAMA_NUM_CTX: int = 16384
 
     # Phase 3.75: query intent LLM (Ollama /api/chat). Empty base URL falls back to OLLAMA_BASE_URL.
     INTENT_LLM_BASE_URL: str = ""

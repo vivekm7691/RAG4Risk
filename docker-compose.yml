@@ -11,7 +11,8 @@ services:
     environment:
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://ollama:11434}
       - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2:3b}
-      - OLLAMA_TIMEOUT=${OLLAMA_TIMEOUT:-1200.0}
+      - OLLAMA_TIMEOUT=${OLLAMA_TIMEOUT:-3000.0}
+      - OLLAMA_NUM_CTX=${OLLAMA_NUM_CTX:-16384}
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-all-MiniLM-L6-v2}
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
