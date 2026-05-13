@@ -2,7 +2,7 @@
  * API client service for RAG4Risk frontend
  */
 
-import axios, { isAxiosError } from 'axios';
+import axios, { isAxiosError, type AxiosProgressEvent } from 'axios';
 
 /**
  * In Vite dev, default to same-origin + `/api` proxy (see vite.config.ts) so the browser
@@ -156,6 +156,27 @@ export interface DocumentListItem {
   file_name?: string;
 }
 
+/** Full document metadata from GET /api/documents (unique docs from vector store). */
+export interface DocumentMetadataRecord {
+  document_id: string;
+  project_name: string;
+  document_type: string;
+  title?: string | null;
+  author?: string | null;
+  upload_date: string;
+  file_name: string;
+  file_size: number;
+}
+
+/** Backend `DocumentType` values for upload forms. */
+export const DOCUMENT_TYPE_OPTIONS: { value: string; label: string }[] = [
+  { value: 'statement of work', label: 'Statement of work' },
+  { value: 'solution description document', label: 'Solution description' },
+  { value: 'proposal document', label: 'Proposal' },
+  { value: 'risk register', label: 'Risk register (.xlsx)' },
+  { value: 'issue log', label: 'Issue log (.xlsx)' },
+];
+
 function formatAxiosError(scope: string, e: unknown): string {
   if (isAxiosError(e)) {
     const st = e.response?.status;
@@ -215,7 +236,12 @@ export async function listDistinctProjectNames(): Promise<ProjectNamesLoadResult
 }
 
 export const documentAPI = {
-  upload: async (file: File, projectName: string, documentType: string) => {
+  upload: async (
+    file: File,
+    projectName: string,
+    documentType: string,
+    options?: { onUploadProgress?: (e: AxiosProgressEvent) => void }
+  ) => {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('project_name', projectName);
@@ -225,13 +251,15 @@ export const documentAPI = {
       headers: {
         'Content-Type': 'multipart/form-data',
       },
+      onUploadProgress: options?.onUploadProgress,
     });
   },
 
-  list: async (projectName?: string) => {
-    return apiClient.get('/api/documents', {
-      params: { project_name: projectName },
+  list: async (projectName?: string): Promise<DocumentMetadataRecord[]> => {
+    const res = await apiClient.get<DocumentMetadataRecord[]>('/api/documents', {
+      params: projectName?.trim() ? { project_name: projectName.trim() } : {},
     });
+    return res.data ?? [];
   },
 
   get: async (documentId: string) => {

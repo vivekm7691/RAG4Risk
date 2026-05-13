@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   listDistinctProjectNames,
   listOllamaModels,
@@ -32,6 +33,7 @@ function forceOptionValue(p: ProjectMetadata): string {
 }
 
 export function ChatInterface() {
+  const [searchParams] = useSearchParams();
   const [projectName, setProjectName] = useState('');
   const [queryText, setQueryText] = useState('');
   const [topK, setTopK] = useState(10);
@@ -86,6 +88,13 @@ export function ChatInterface() {
     refreshOllamaModels();
     refreshProjectNames();
   }, [refreshOllamaModels, refreshProjectNames]);
+
+  useEffect(() => {
+    const p = searchParams.get('project');
+    if (p?.trim()) {
+      setProjectName(p.trim());
+    }
+  }, [searchParams]);
 
   /** Dropdown options: known projects plus current selection if not in list */
   const projectSelectOptions = useMemo(() => {
@@ -301,7 +310,7 @@ export function ChatInterface() {
 
   return (
     <div className="chat-interface">
-      <h1>RAG4Risk</h1>
+      <h1>Chat</h1>
       <p className="chat-subtitle">
         Query documents with optional similar past projects (Phase 3.5). When past projects are on,
         you review retrieval first, then confirm to call the LLM.
@@ -511,7 +520,13 @@ export function ChatInterface() {
             <div className="preview-section" style={{ marginBottom: '1rem' }}>
               <h4>Query intent</h4>
               <p style={{ fontSize: '0.9rem', marginTop: 0 }}>{preview.query_intent.intent_summary}</p>
-              <p style={{ fontSize: '0.8rem', color: '#666', marginBottom: 4 }}>Slots (current project)</p>
+              <p style={{ fontSize: '0.8rem', color: '#666', marginBottom: 4 }}>Document-type weights</p>
+              <pre className="metadata-json" style={{ fontSize: '0.75rem' }}>
+                {JSON.stringify(preview.query_intent.document_weights, null, 2)}
+              </pre>
+              <p style={{ fontSize: '0.8rem', color: '#666', marginBottom: 4, marginTop: 8 }}>
+                Slots (current project)
+              </p>
               <pre className="metadata-json" style={{ fontSize: '0.75rem' }}>
                 {JSON.stringify(preview.query_intent.slots_current_project, null, 2)}
               </pre>

@@ -15,16 +15,15 @@
 
 body {
   margin: 0;
-  display: flex;
-  place-items: center;
   min-width: 320px;
   min-height: 100vh;
 }
 
 #root {
   width: 100%;
+  min-height: 100vh;
   margin: 0 auto;
-  text-align: center;
+  text-align: left;
 }
 
 @media (prefers-color-scheme: light) {

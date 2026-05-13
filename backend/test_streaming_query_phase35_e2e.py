@@ -15,9 +15,9 @@ from datetime import datetime
 BASE_URL = "http://localhost:8000"
 API_BASE = f"{BASE_URL}/api"
 
-# Timeout for streaming request: (connect, read). Read must be >= backend OLLAMA_TIMEOUT (1200s).
+# Timeout for streaming request: (connect, read). Read must be >= backend OLLAMA_TIMEOUT (3000s).
 STREAM_CONNECT_TIMEOUT = 60
-STREAM_READ_TIMEOUT = 1300  # ~22 min; backend uses 1200s for LLM
+STREAM_READ_TIMEOUT = 3100  # > backend OLLAMA_TIMEOUT (3000s) for RAG LLM
 
 
 def format_context(chunks: List[Dict[str, Any]], project_name: Optional[str] = None) -> str:
@@ -580,7 +580,7 @@ def test_streaming_query_phase35_e2e(
     #
     # except requests.exceptions.Timeout:
     #     print("\n[ERROR] Request timed out (connect or stream read)")
-    #     print("  If the LLM is slow, increase STREAM_READ_TIMEOUT in this script (backend uses 1200s).")
+    #     print("  If the LLM is slow, increase STREAM_READ_TIMEOUT in this script (backend uses OLLAMA_TIMEOUT).")
     #     print("Status: TIMEOUT")
     # except requests.exceptions.ConnectionError:
     #     print("\n[ERROR] Cannot connect to backend. Is the server running?")

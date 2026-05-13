@@ -21,7 +21,18 @@ class RAGService:
         self.base_url = base_url or settings.OLLAMA_BASE_URL
         self.model = model or settings.OLLAMA_MODEL
         self.timeout = settings.OLLAMA_TIMEOUT  # Configurable timeout from settings
-    
+
+    def _ollama_generate_payload_base(self, prompt: str, stream: bool) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "model": self.model,
+            "prompt": prompt,
+            "stream": stream,
+        }
+        nctx = int(getattr(settings, "OLLAMA_NUM_CTX", 0) or 0)
+        if nctx > 0:
+            payload["options"] = {"num_ctx": nctx}
+        return payload
+
     async def generate_response(
         self,
         query: str,
@@ -172,14 +183,8 @@ Answer:"""
         try:
             # Ollama API endpoint
             url = f"{self.base_url}/api/generate"
-            
-            # Request payload
-            payload = {
-                "model": self.model,
-                "prompt": prompt,
-                "stream": False  # Non-streaming for simplicity
-            }
-            
+            payload = self._ollama_generate_payload_base(prompt, False)
+
             # Use async client with context manager
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.post(url, json=payload)
@@ -216,16 +221,9 @@ Answer:"""
         Raises:
             RuntimeError: If API call fails
         """
-        # Ollama API endpoint
         url = f"{self.base_url}/api/generate"
-        
-        # Request payload with streaming enabled
-        payload = {
-            "model": self.model,
-            "prompt": prompt,
-            "stream": True  # Enable streaming
-        }
-        
+        payload = self._ollama_generate_payload_base(prompt, True)
+
         # Use async client with context manager
         # The context manager will stay open until generator is exhausted
         async with httpx.AsyncClient(timeout=self.timeout) as client:

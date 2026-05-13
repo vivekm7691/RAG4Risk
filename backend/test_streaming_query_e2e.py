@@ -460,7 +460,7 @@ def test_streaming_query_e2e(
             json=query_data,
             stream=True,
             headers={"Accept": "text/event-stream"},
-            timeout=600  # 10 minutes for long LLM responses
+            timeout=3100  # Must exceed backend OLLAMA_TIMEOUT (3000s) for long RAG LLM runs
         )
         
         if response.status_code != 200:

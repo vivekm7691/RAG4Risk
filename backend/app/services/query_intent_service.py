@@ -117,14 +117,19 @@ async def ollama_intent_chat_completion(
     temp = settings.INTENT_LLM_TEMPERATURE if temperature is None else temperature
 
     url = f"{bu}/api/chat"
+    options: Dict[str, Any] = {
+        "num_predict": mt,
+        "temperature": temp,
+    }
+    nctx = int(getattr(settings, "OLLAMA_NUM_CTX", 0) or 0)
+    if nctx > 0:
+        options["num_ctx"] = nctx
+
     payload: Dict[str, Any] = {
         "model": m,
         "messages": build_ollama_chat_messages(user_query),
         "stream": False,
-        "options": {
-            "num_predict": mt,
-            "temperature": temp,
-        },
+        "options": options,
     }
 
     try:
