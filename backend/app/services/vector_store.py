@@ -575,6 +575,50 @@ class VectorStore:
         except Exception as e:
             raise RuntimeError(f"Failed to get chunks by project: {str(e)}")
 
+    async def get_chunks_by_project_and_document_type(
+        self,
+        project_name: str,
+        document_type: DocType,
+        limit: int = 10000,
+    ) -> List[Dict[str, Any]]:
+        """
+        Get all chunks for a project and document type.
+
+        Args:
+            project_name: Project name to filter by
+            document_type: Document type enum value
+            limit: Max number of chunks to return (default 10000)
+
+        Returns:
+            List of chunk dicts with 'text' and 'metadata'
+        """
+        await self._ensure_initialized()
+        client = await self._get_client()
+        try:
+            filter_condition = self._build_qdrant_filter(
+                project_name=project_name,
+                document_type=document_type,
+            )
+            scroll_result = await client.scroll(
+                collection_name=self.collection_name,
+                scroll_filter=filter_condition,
+                limit=limit,
+            )
+            points = scroll_result[0] if isinstance(scroll_result, tuple) else scroll_result.points
+            chunks = []
+            for point in points:
+                payload = point.payload
+                chunks.append({
+                    "text": payload.get("text", ""),
+                    "metadata": {k: v for k, v in payload.items() if k != "text"},
+                })
+            return chunks
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to get chunks for project={project_name!r} "
+                f"document_type={document_type.value!r}: {str(e)}"
+            )
+
     async def distinct_document_types_for_project(
         self, project_name: str, limit: int = 5000
     ) -> List[str]:
