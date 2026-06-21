@@ -31,6 +31,15 @@ services:
       - INTENT_LLM_TIMEOUT_SECONDS=${INTENT_LLM_TIMEOUT_SECONDS:-1200}
       - INTENT_LLM_MAX_TOKENS=${INTENT_LLM_MAX_TOKENS:-4096}
       - INTENT_LLM_TEMPERATURE=${INTENT_LLM_TEMPERATURE:-0.1}
+      # Knowledge graph (Neo4j) — Phase 1
+      - GRAPH_ENABLED=${GRAPH_ENABLED:-false}
+      - NEO4J_URI=${NEO4J_URI:-bolt://neo4j:7687}
+      - NEO4J_USER=${NEO4J_USER:-neo4j}
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-rag4risk-dev}
+      - NEO4J_DATABASE=${NEO4J_DATABASE:-neo4j}
+      - GRAPH_EXTRACT_ON_INGEST=${GRAPH_EXTRACT_ON_INGEST:-true}
+      - GRAPH_EXTRACT_MAX_CHUNKS=${GRAPH_EXTRACT_MAX_CHUNKS:-20}
+      - GRAPH_EXTRACT_TIMEOUT_SECONDS=${GRAPH_EXTRACT_TIMEOUT_SECONDS:-120}
     volumes:
       - ./backend:/app
       - backend_data:/app/data
@@ -93,10 +102,32 @@ services:
         reservations:
           memory: 8G
 
+  neo4j:
+    image: neo4j:5-community
+    container_name: rag4risk-neo4j
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      - NEO4J_AUTH=${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-rag4risk-dev}
+      - NEO4J_PLUGINS=["apoc"]
+    volumes:
+      - neo4j_data:/data
+    networks:
+      - rag4risk-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:7474 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
 volumes:
   backend_data:
   qdrant_data:
   ollama_data:
+  neo4j_data:
   huggingface_cache:  # Persist HuggingFace model cache to avoid re-downloading
 
 networks:

@@ -164,6 +164,26 @@ async def upload_document(
             # Store in vector database (now async with Qdrant)
             vector_store = await get_vector_store()
             added_ids = await vector_store.add_documents(chunks, embeddings_list)
+
+            # Phase 2: sync knowledge graph (non-blocking on failure)
+            if settings.GRAPH_ENABLED:
+                try:
+                    from app.services.graph_sync_service import sync_document_to_graph
+
+                    graph_stats = await sync_document_to_graph(
+                        chunks,
+                        document_id=document_id,
+                        project_name=project_name,
+                        document_type=doc_type.value,
+                        file_name=file.filename,
+                        title=file_metadata.get("title"),
+                    )
+                    logger.info("Graph sync after upload: %s", graph_stats)
+                except Exception as graph_exc:
+                    logger.warning(
+                        "Graph sync failed after upload (vector store unchanged): %s",
+                        graph_exc,
+                    )
             
             # Prepare response metadata
             response_metadata = DocumentMetadata(
@@ -387,6 +407,14 @@ async def delete_document(doc_id: str):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Document with ID {doc_id} not found"
             )
+
+        if settings.GRAPH_ENABLED:
+            try:
+                from app.services.graph_sync_service import delete_document_from_graph
+
+                await delete_document_from_graph(doc_id)
+            except Exception as graph_exc:
+                logger.warning("Graph delete failed for %s: %s", doc_id, graph_exc)
         
         return None
         

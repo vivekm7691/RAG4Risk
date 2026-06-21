@@ -73,6 +73,21 @@ class Settings(BaseSettings):
     # File Upload Settings
     MAX_UPLOAD_SIZE: int = 50 * 1024 * 1024  # 50MB
     ALLOWED_EXTENSIONS: List[str] = [".docx", ".xlsx"]
+
+    # Knowledge graph (Neo4j) — Phase 1
+    GRAPH_ENABLED: bool = False
+    NEO4J_URI: str = "bolt://localhost:7687"
+    NEO4J_USER: str = "neo4j"
+    NEO4J_PASSWORD: str = "rag4risk-dev"
+    NEO4J_DATABASE: str = "neo4j"
+    GRAPH_NEIGHBORHOOD_DEFAULT_DEPTH: int = 2
+    GRAPH_NEIGHBORHOOD_DEFAULT_LIMIT: int = 50
+    GRAPH_MAX_DEPTH: int = 3
+    GRAPH_QUERY_TIMEOUT_SECONDS: float = 10.0
+    # Phase 2: post-ingest LLM relation extraction (Word documents)
+    GRAPH_EXTRACT_ON_INGEST: bool = True
+    GRAPH_EXTRACT_MAX_CHUNKS: int = 20
+    GRAPH_EXTRACT_TIMEOUT_SECONDS: float = 120.0
     
     class Config:
         env_file = ".env"

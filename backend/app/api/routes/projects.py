@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, status
 from app.models.document import ProjectMetadata, ProjectMetadataCreateUpdate
 from app.services.project_metadata import ProjectMetadataService
 from app.services.project_similarity import get_shared_project_similarity_service
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,13 @@ async def create_or_update_project_metadata(data: ProjectMetadataCreateUpdate):
     try:
         out = metadata_service.create_or_update_project_metadata(data)
         similarity_service.clear_similarity_cache()
+        if settings.GRAPH_ENABLED:
+            try:
+                from app.services.graph_sync_service import sync_project_metadata_to_graph
+
+                await sync_project_metadata_to_graph(out)
+            except Exception as graph_exc:
+                logger.warning("Graph project metadata sync failed: %s", graph_exc)
         return out
     except Exception as e:
         logger.exception("Failed to create/update project metadata")

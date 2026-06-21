@@ -93,3 +93,28 @@ async def startup_event():
             e,
         )
 
+    if settings.GRAPH_ENABLED:
+        try:
+            from app.services.graph_store import get_graph_store
+
+            gs = await get_graph_store()
+            await gs.ensure_schema()
+            logger.info("Neo4j graph schema initialized")
+        except Exception as e:
+            logger.warning(
+                "Could not initialize Neo4j graph store (graph features degraded): %s",
+                e,
+            )
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Release long-lived clients."""
+    if settings.GRAPH_ENABLED:
+        try:
+            from app.services.graph_store import reset_graph_store
+
+            await reset_graph_store()
+        except Exception as e:
+            logger.warning("Error closing graph store: %s", e)
+

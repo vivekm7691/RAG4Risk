@@ -20,6 +20,7 @@ openpyxl>=3.1.0
 # torch is installed separately in Dockerfile before this requirements.txt
 sentence-transformers>=2.2.2
 qdrant-client>=1.16.0  # Updated for better async support and bug fixes
+neo4j>=5.14.0  # Async Neo4j driver for knowledge graph (Phase 1)
 
 # LangChain (optional, for RAG orchestration)
 langchain-core>=0.1.0
