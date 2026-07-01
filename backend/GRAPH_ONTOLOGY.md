@@ -87,3 +87,4 @@ Persist LLM nodes/edges when `confidence >= 0.75`. Assumptions require `is_expli
 - **Phase 1:** Neo4j `GraphStore` ✓
 - **Phase 2:** Ingest hooks + relation extractor ✓ (`graph_sync_service`, `relation_extractor_service`)
 - **Phase 3:** Graph-augmented retrieval (`graph_retrieval.py`, `use_graph_augmentation` on query API) ✓
+- **Phase 4:** Observability + guardrails — enriched `graph_expansion` metadata, stage timings, Neo4j reachability degrade, per-seed degree cap, 504 on LLM timeout, frontend toggle ✓

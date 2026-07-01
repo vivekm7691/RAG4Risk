@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 
@@ -43,6 +44,8 @@ _SEMANTIC_PREFIXES = (
 _ROW_PREFIX_RE = re.compile(r"^(risk|issue):([^:]+):row:\d+$")
 
 _graph_store_instance: Optional["GraphStore"] = None
+_graph_connection_ok: Optional[bool] = None
+_graph_connection_checked_at: float = 0.0
 
 
 class GraphNeighborhoodResult(BaseModel):
@@ -454,6 +457,7 @@ async def get_graph_store() -> GraphStore:
 async def reset_graph_store() -> None:
     """Close and clear singleton (tests)."""
     global _graph_store_instance
+    invalidate_graph_connection_cache()
     if _graph_store_instance is not None:
         await _graph_store_instance.close()
         _graph_store_instance = None
@@ -479,3 +483,32 @@ async def verify_graph_connection() -> bool:
     except (ServiceUnavailable, Neo4jError, OSError) as exc:
         logger.warning("Neo4j connection check failed: %s", exc)
         return False
+
+
+async def is_graph_reachable(force: bool = False) -> bool:
+    """Cached Neo4j reachability for query-time degrade-to-vector-only."""
+    global _graph_connection_ok, _graph_connection_checked_at
+
+    if not settings.GRAPH_ENABLED:
+        return False
+
+    ttl = max(0.0, settings.GRAPH_CONNECTION_CHECK_TTL_SECONDS)
+    now = time.monotonic()
+    if (
+        not force
+        and _graph_connection_ok is not None
+        and (now - _graph_connection_checked_at) < ttl
+    ):
+        return _graph_connection_ok
+
+    ok = await verify_graph_connection()
+    _graph_connection_ok = ok
+    _graph_connection_checked_at = now
+    return ok
+
+
+def invalidate_graph_connection_cache() -> None:
+    """Clear reachability cache (tests / after Neo4j recovery)."""
+    global _graph_connection_ok, _graph_connection_checked_at
+    _graph_connection_ok = None
+    _graph_connection_checked_at = 0.0

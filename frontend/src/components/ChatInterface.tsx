@@ -40,6 +40,8 @@ export function ChatInterface() {
   const [includePastProjects, setIncludePastProjects] = useState(false);
   /** Phase 3.75: send use_query_intent when a project is selected (server needs QUERY_INTENT_ENABLED). */
   const [useQueryIntent, setUseQueryIntent] = useState(false);
+  /** Phase 4: send use_graph_augmentation when a project is selected (server needs GRAPH_ENABLED). */
+  const [useGraphAugmentation, setUseGraphAugmentation] = useState(false);
   const [currentWeight, setCurrentWeight] = useState(0.7);
   const [pastWeight, setPastWeight] = useState(0.3);
   const [forceSelect, setForceSelect] = useState('');
@@ -124,6 +126,7 @@ export function ChatInterface() {
   const forceProject = parseForceValue(forceSelect);
 
   const intentActive = useQueryIntent && Boolean(projectName.trim());
+  const graphActive = useGraphAugmentation && Boolean(projectName.trim());
 
   const runRetrievalPreview = useCallback(async () => {
     setError(null);
@@ -141,6 +144,7 @@ export function ChatInterface() {
         context_weighting: contextWeighting,
         force_project: forceProject,
         use_query_intent: intentActive,
+        use_graph_augmentation: graphActive,
       });
       setPreview(data);
       setExcludedChunkIds(new Set());
@@ -156,7 +160,7 @@ export function ChatInterface() {
     } finally {
       setLoadingPreview(false);
     }
-  }, [projectName, queryText, topK, contextWeighting, forceProject, intentActive]);
+  }, [projectName, queryText, topK, contextWeighting, forceProject, intentActive, graphActive]);
 
   const executeStream = useCallback(
     async (excludeIds: string[]) => {
@@ -186,6 +190,7 @@ export function ChatInterface() {
           exclude_chunk_ids: excludeIds.length > 0 ? excludeIds : undefined,
           force_project: includePastProjects ? forceProject : undefined,
           use_query_intent: intentActive,
+          use_graph_augmentation: graphActive,
         },
         {
           onSources: (sources, similarProjects) => {
@@ -259,6 +264,7 @@ export function ChatInterface() {
       forceProject,
       ollamaModel,
       intentActive,
+      graphActive,
     ]
   );
 
@@ -269,6 +275,10 @@ export function ChatInterface() {
     }
     if (useQueryIntent && !projectName.trim()) {
       setError('Select a project to use query intent (weighted retrieval by document type).');
+      return;
+    }
+    if (useGraphAugmentation && !projectName.trim()) {
+      setError('Select a project to use graph augmentation (Neo4j neighborhood expansion).');
       return;
     }
     if (includePastProjects && !projectName.trim()) {
@@ -396,6 +406,21 @@ export function ChatInterface() {
         <p className="chat-field-hint" style={{ fontSize: '0.75rem', marginTop: -4, marginBottom: 8 }}>
           Runs the intent model when <code>QUERY_INTENT_ENABLED</code> is set on the API. Requires a project
           above; splits <code>top_k</code> across document types (SOW, solution description, etc.).
+        </p>
+
+        <div className="chat-row">
+          <label>
+            <input
+              type="checkbox"
+              checked={useGraphAugmentation}
+              onChange={(e) => setUseGraphAugmentation(e.target.checked)}
+            />
+            Use graph augmentation (Neo4j neighborhood expansion)
+          </label>
+        </div>
+        <p className="chat-field-hint" style={{ fontSize: '0.75rem', marginTop: -4, marginBottom: 8 }}>
+          When <code>GRAPH_ENABLED</code> is set on the API, expands vector hits via the knowledge graph.
+          Requires a project above. Preview shows added chunks and graph paths.
         </p>
 
         <div className="chat-field">
@@ -530,6 +555,37 @@ export function ChatInterface() {
               <pre className="metadata-json" style={{ fontSize: '0.75rem' }}>
                 {JSON.stringify(preview.query_intent.slots_current_project, null, 2)}
               </pre>
+            </div>
+          )}
+
+          {preview.graph_expansion && (
+            <div className="preview-section" style={{ marginBottom: '1rem' }}>
+              <h4>Graph expansion</h4>
+              <p style={{ fontSize: '0.85rem', marginTop: 0 }}>
+                Vector chunks: {preview.graph_expansion.vector_chunk_count ?? '—'} · Graph-added:{' '}
+                {preview.graph_expansion.graph_added_count ?? preview.graph_expansion.added_chunk_ids.length}
+                {preview.graph_expansion.degraded ? (
+                  <span style={{ color: '#b45309' }}>
+                    {' '}
+                    · degraded ({preview.graph_expansion.degrade_reason ?? 'unknown'})
+                  </span>
+                ) : null}
+              </p>
+              {preview.graph_expansion.timing_ms && (
+                <p style={{ fontSize: '0.75rem', color: '#666' }}>
+                  Timing (ms): {JSON.stringify(preview.graph_expansion.timing_ms)}
+                </p>
+              )}
+              {preview.graph_expansion.paths_summary.length > 0 && (
+                <>
+                  <p style={{ fontSize: '0.8rem', color: '#666', marginBottom: 4 }}>Graph paths</p>
+                  <ul style={{ fontSize: '0.75rem', marginTop: 0, paddingLeft: '1.25rem' }}>
+                    {preview.graph_expansion.paths_summary.slice(0, 10).map((p, i) => (
+                      <li key={i}>{p}</li>
+                    ))}
+                  </ul>
+                </>
+              )}
             </div>
           )}
 

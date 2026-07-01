@@ -84,6 +84,11 @@ class Settings(BaseSettings):
     GRAPH_NEIGHBORHOOD_DEFAULT_LIMIT: int = 50
     GRAPH_MAX_DEPTH: int = 3
     GRAPH_QUERY_TIMEOUT_SECONDS: float = 10.0
+    # Phase 4: cap neighbors per vector seed; max seeds sent to Neo4j per query
+    GRAPH_MAX_DEGREE_PER_SEED: int = 25
+    GRAPH_MAX_SEEDS: int = 10
+    # TTL for Neo4j reachability cache at query time (seconds)
+    GRAPH_CONNECTION_CHECK_TTL_SECONDS: float = 30.0
     # Phase 3: max extra chunks from graph neighborhood beyond vector top_k
     GRAPH_RETRIEVAL_EXTRA_BUDGET: int = 5
     # Phase 2: post-ingest LLM relation extraction (Word documents)

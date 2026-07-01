@@ -37,7 +37,15 @@ async def root():
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
-    return {"status": "healthy"}
+    payload: dict = {"status": "healthy"}
+    if settings.GRAPH_ENABLED:
+        from app.services.graph_store import is_graph_available, is_graph_reachable
+
+        payload["graph"] = {
+            "enabled": is_graph_available(),
+            "reachable": await is_graph_reachable(),
+        }
+    return payload
 
 
 # Register API routes

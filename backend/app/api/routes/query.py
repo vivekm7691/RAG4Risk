@@ -18,6 +18,7 @@ from app.models.query import (
     QueryIntentInfo,
     PastProjectIntentSlots,
     GraphExpansionInfo,
+    QueryTimings,
     metadata_filters_for_vector_search,
 )
 from app.services.embeddings import EmbeddingService
@@ -70,32 +71,72 @@ def _graph_augmentation_will_run(request: QueryRequest) -> bool:
     )
 
 
+def _is_ollama_timeout(exc: BaseException) -> bool:
+    return isinstance(exc, RuntimeError) and "timed out after" in str(exc).lower()
+
+
+def _graph_expansion_from_result(result) -> GraphExpansionInfo:
+    return GraphExpansionInfo(
+        enabled=True,
+        added_chunk_ids=result.added_chunk_ids,
+        paths_summary=result.paths_summary,
+        vector_chunk_count=result.vector_chunk_count,
+        graph_added_count=result.graph_added_count,
+        seed_count=result.seed_count,
+        degraded=result.degraded,
+        degrade_reason=result.degrade_reason,
+        timing_ms=result.timing_ms or None,
+    )
+
+
 async def _augment_with_graph_if_enabled(
     request: QueryRequest,
     chunks: List[Dict[str, Any]],
-) -> tuple[List[Dict[str, Any]], Optional[GraphExpansionInfo], Optional[List[str]]]:
+) -> tuple[List[Dict[str, Any]], Optional[GraphExpansionInfo], Optional[List[str]], float]:
+    """Returns (chunks, graph_expansion, graph_context_lines, graph_elapsed_seconds)."""
     if not _graph_augmentation_will_run(request) or not chunks:
-        return chunks, None, None
+        return chunks, None, None, 0.0
 
     from app.services.graph_retrieval import augment_chunks_with_graph
 
+    graph_start = time.perf_counter()
     try:
         result = await augment_chunks_with_graph(
             chunks,
             project_name=request.project_name or "",
         )
+        graph_elapsed = time.perf_counter() - graph_start
+        info = _graph_expansion_from_result(result)
+        if info.degraded:
+            logger.warning(
+                "Graph augmentation degraded project=%r reason=%s vector=%d added=%d timing_ms=%s",
+                request.project_name,
+                info.degrade_reason,
+                info.vector_chunk_count,
+                info.graph_added_count,
+                info.timing_ms,
+            )
         return (
             result.chunks,
-            GraphExpansionInfo(
-                enabled=True,
-                added_chunk_ids=result.added_chunk_ids,
-                paths_summary=result.paths_summary,
-            ),
+            info,
             result.graph_context_lines or None,
+            graph_elapsed,
         )
     except Exception as exc:
+        graph_elapsed = time.perf_counter() - graph_start
         logger.warning("Graph augmentation failed, using vector-only: %s", exc)
-        return chunks, GraphExpansionInfo(enabled=True), None
+        return (
+            chunks,
+            GraphExpansionInfo(
+                enabled=True,
+                vector_chunk_count=len(chunks),
+                graph_added_count=0,
+                degraded=True,
+                degrade_reason="graph_augmentation_error",
+            ),
+            None,
+            graph_elapsed,
+        )
 
 
 def _normalize_context_chunks(search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -316,8 +357,19 @@ async def retrieve_preview(request: QueryRequest):
         logger.exception("Retrieve preview failed")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
-    search_results, graph_expansion, _ = await _augment_with_graph_if_enabled(request, result["chunks"])
+    search_results, graph_expansion, _, graph_elapsed = await _augment_with_graph_if_enabled(
+        request, result["chunks"]
+    )
     result = {**result, "chunks": search_results}
+
+    if graph_expansion:
+        logger.info(
+            "retrieve-preview graph_expansion vector=%d added=%d degraded=%s elapsed=%.3fs",
+            graph_expansion.vector_chunk_count,
+            graph_expansion.graph_added_count,
+            graph_expansion.degraded,
+            graph_elapsed,
+        )
 
     chunks = _preview_chunks_from_result(result)
     return RetrievalPreviewResponse(
@@ -405,13 +457,24 @@ async def query_documents(request: QueryRequest):
                     n_past_override=0,
                 )
 
-        search_results, graph_expansion, graph_context_lines = await _augment_with_graph_if_enabled(
+        search_results, graph_expansion, graph_context_lines, graph_elapsed = await _augment_with_graph_if_enabled(
             request,
             search_results or [],
         )
 
-        embedding_time = time.time() - embedding_start
-        search_time = 0.0
+        retrieval_time = time.time() - embedding_start - graph_elapsed
+        embedding_time = retrieval_time  # legacy: embedding+vector portion before graph
+
+        if graph_expansion:
+            logger.info(
+                "Query retrieval vector=%d graph_added=%d degraded=%s "
+                "retrieval=%.3fs graph=%.3fs",
+                graph_expansion.vector_chunk_count,
+                graph_expansion.graph_added_count,
+                graph_expansion.degraded,
+                retrieval_time,
+                graph_elapsed,
+            )
 
         if not search_results:
             total_time = time.time() - total_start
@@ -423,6 +486,11 @@ async def query_documents(request: QueryRequest):
                 similar_projects=_similar_projects_to_preview(similar_projects_result),
                 query_intent=intent_info,
                 graph_expansion=graph_expansion,
+                timings=QueryTimings(
+                    retrieval=round(retrieval_time, 3),
+                    graph=round(graph_elapsed, 3) if graph_elapsed else None,
+                    total=round(total_time, 3),
+                ),
             )
 
         format_start = time.time()
@@ -444,6 +512,14 @@ async def query_documents(request: QueryRequest):
         sources = _search_results_to_sources(search_results)
 
         total_time = time.time() - total_start
+        logger.info(
+            "Query completed total=%.3fs retrieval=%.3fs graph=%.3fs format=%.3fs llm=%.3fs",
+            total_time,
+            retrieval_time,
+            graph_elapsed,
+            format_time,
+            llm_time,
+        )
         return QueryResponse(
             answer=answer,
             sources=sources,
@@ -452,11 +528,23 @@ async def query_documents(request: QueryRequest):
             similar_projects=_similar_projects_to_preview(similar_projects_result),
             query_intent=intent_info,
             graph_expansion=graph_expansion,
+            timings=QueryTimings(
+                retrieval=round(retrieval_time, 3),
+                graph=round(graph_elapsed, 3) if graph_elapsed else None,
+                format=round(format_time, 3),
+                llm=round(llm_time, 3),
+                total=round(total_time, 3),
+            ),
         )
 
     except Exception as e:
         total_time = time.time() - total_start
         logger.error(f"Query failed after {total_time:.3f}s: {str(e)}")
+        if _is_ollama_timeout(e):
+            raise HTTPException(
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                detail=str(e),
+            )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to process query: {str(e)}",
@@ -538,16 +626,27 @@ async def query_documents_stream(request: QueryRequest):
                         n_past_override=0,
                     )
 
-            search_results, graph_expansion, graph_context_lines = await _augment_with_graph_if_enabled(
+            search_results, graph_expansion, graph_context_lines, graph_elapsed = await _augment_with_graph_if_enabled(
                 request,
                 search_results or [],
             )
 
-            embedding_time = time.time() - embedding_start
-            search_time = 0.0
+            retrieval_time = time.time() - embedding_start - graph_elapsed
+            embedding_time = retrieval_time
+
             logger.info(
-                f"Retrieval completed in {embedding_time:.3f}s, found {len(search_results) if search_results else 0} results"
+                "Stream retrieval found %d chunks retrieval=%.3fs graph=%.3fs",
+                len(search_results) if search_results else 0,
+                retrieval_time,
+                graph_elapsed,
             )
+            if graph_expansion:
+                logger.info(
+                    "Stream graph_expansion vector=%d added=%d degraded=%s",
+                    graph_expansion.vector_chunk_count,
+                    graph_expansion.graph_added_count,
+                    graph_expansion.degraded,
+                )
 
             if not search_results:
                 total_time = time.time() - total_start
@@ -574,8 +673,10 @@ async def query_documents_stream(request: QueryRequest):
                     "type": "done",
                     "total_time": round(total_time, 3),
                     "timings": {
+                        "retrieval": round(retrieval_time, 3),
+                        "graph": round(graph_elapsed, 3) if graph_elapsed else None,
                         "embedding": round(embedding_time, 3),
-                        "search": round(search_time, 3),
+                        "search": 0.0,
                         "format": 0.0,
                         "llm": None,
                     },
@@ -629,7 +730,14 @@ async def query_documents_stream(request: QueryRequest):
             except Exception as llm_error:
                 llm_time = time.time() - llm_start
                 logger.error(f"LLM streaming failed after {llm_time:.3f}s: {str(llm_error)}")
-                error_data = {"type": "error", "message": f"LLM error: {str(llm_error)}"}
+                if _is_ollama_timeout(llm_error):
+                    error_data = {
+                        "type": "error",
+                        "message": str(llm_error),
+                        "status_code": 504,
+                    }
+                else:
+                    error_data = {"type": "error", "message": f"LLM error: {str(llm_error)}"}
                 yield f"data: {json.dumps(error_data)}\n\n"
 
             total_time = time.time() - total_start
@@ -637,8 +745,10 @@ async def query_documents_stream(request: QueryRequest):
                 "type": "done",
                 "total_time": round(total_time, 3),
                 "timings": {
+                    "retrieval": round(retrieval_time, 3),
+                    "graph": round(graph_elapsed, 3) if graph_elapsed else None,
                     "embedding": round(embedding_time, 3),
-                    "search": round(search_time, 3),
+                    "search": 0.0,
                     "format": round(format_time, 3),
                     "llm": round(llm_time, 3) if "llm_time" in locals() else None,
                 },

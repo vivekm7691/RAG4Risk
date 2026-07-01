@@ -121,11 +121,27 @@ class QueryRequest(BaseModel):
 
 
 class GraphExpansionInfo(BaseModel):
-    """Phase 3: graph-augmented retrieval metadata."""
+    """Phase 3–4: graph-augmented retrieval metadata."""
 
     enabled: bool = False
     added_chunk_ids: List[str] = Field(default_factory=list)
     paths_summary: List[str] = Field(default_factory=list)
+    vector_chunk_count: int = 0
+    graph_added_count: int = 0
+    seed_count: int = 0
+    degraded: bool = False
+    degrade_reason: Optional[str] = None
+    timing_ms: Optional[Dict[str, float]] = None
+
+
+class QueryTimings(BaseModel):
+    """Phase 4: per-stage latency (seconds) for observability."""
+
+    retrieval: Optional[float] = None
+    graph: Optional[float] = None
+    format: Optional[float] = None
+    llm: Optional[float] = None
+    total: Optional[float] = None
 
 
 class PastProjectIntentSlots(BaseModel):
@@ -174,6 +190,10 @@ class QueryResponse(BaseModel):
     graph_expansion: Optional[GraphExpansionInfo] = Field(
         None,
         description="Phase 3: graph-augmented chunks and relationship paths when use_graph_augmentation was applied",
+    )
+    timings: Optional[QueryTimings] = Field(
+        None,
+        description="Phase 4: per-stage latency in seconds",
     )
 
 

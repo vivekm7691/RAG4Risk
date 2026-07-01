@@ -74,6 +74,19 @@ export interface QueryIntentInfo {
   slots_past_by_project: PastProjectIntentSlots[];
 }
 
+/** Phase 3–4: graph-augmented retrieval metadata when use_graph_augmentation is true. */
+export interface GraphExpansionInfo {
+  enabled: boolean;
+  added_chunk_ids: string[];
+  paths_summary: string[];
+  vector_chunk_count?: number;
+  graph_added_count?: number;
+  seed_count?: number;
+  degraded?: boolean;
+  degrade_reason?: string | null;
+  timing_ms?: Record<string, number> | null;
+}
+
 export interface RetrievePreviewRequest {
   query: string;
   project_name?: string | null;
@@ -84,6 +97,8 @@ export interface RetrievePreviewRequest {
   force_project?: ForceProjectSelection;
   /** When true and server enables intent, weighted per-type retrieval (requires project_name). */
   use_query_intent?: boolean;
+  /** When true and server GRAPH_ENABLED, expand vector hits via Neo4j (requires project_name). */
+  use_graph_augmentation?: boolean;
 }
 
 export interface SimilarProjectPreview {
@@ -108,6 +123,7 @@ export interface RetrievalPreviewResponse {
   query: string;
   project_name?: string | null;
   query_intent?: QueryIntentInfo | null;
+  graph_expansion?: GraphExpansionInfo | null;
 }
 
 export interface SourceCitation {
@@ -133,6 +149,8 @@ export interface QueryStreamRequest {
   force_project?: ForceProjectSelection;
   /** When true and server enables intent, weighted per-type retrieval (requires project_name). */
   use_query_intent?: boolean;
+  /** When true and server GRAPH_ENABLED, expand vector hits via Neo4j (requires project_name). */
+  use_graph_augmentation?: boolean;
 }
 
 export interface ProjectMetadata {
@@ -361,6 +379,7 @@ export async function streamQuery(
           : undefined,
       force_project: body.force_project,
       use_query_intent: body.use_query_intent ?? false,
+      use_graph_augmentation: body.use_graph_augmentation ?? false,
     }),
   });
 
