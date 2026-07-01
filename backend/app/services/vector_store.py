@@ -541,6 +541,34 @@ class VectorStore:
         except Exception as e:
             raise RuntimeError(f"Failed to get document chunks: {str(e)}")
 
+    async def get_chunks_by_ids(self, chunk_ids: List[str]) -> List[Dict[str, Any]]:
+        """
+        Batch-fetch chunks by Qdrant point ID (chunk_id UUID).
+
+        Returns chunks in the same shape as search results (without distance).
+        Missing IDs are omitted silently.
+        """
+        if not chunk_ids:
+            return []
+
+        await self._ensure_initialized()
+        client = await self._get_client()
+        try:
+            points = await client.retrieve(
+                collection_name=self.collection_name,
+                ids=list(chunk_ids),
+            )
+            chunks: List[Dict[str, Any]] = []
+            for point in points:
+                payload = point.payload or {}
+                chunks.append({
+                    "text": payload.get("text", ""),
+                    "metadata": {k: v for k, v in payload.items() if k != "text"},
+                })
+            return chunks
+        except Exception as e:
+            raise RuntimeError(f"Failed to get chunks by ids: {str(e)}")
+    
     async def get_chunks_by_project(self, project_name: str, limit: int = 10000) -> List[Dict[str, Any]]:
         """
         Get all chunks for a project (for project-level aggregation, e.g. similarity).

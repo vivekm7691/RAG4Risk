@@ -38,7 +38,8 @@ class RAGService:
         query: str,
         context_chunks: List[Dict[str, Any]],
         project_name: Optional[str] = None,
-        stream: bool = False
+        stream: bool = False,
+        graph_context_lines: Optional[List[str]] = None,
     ):
         """
         Generate a response using RAG (Retrieval-Augmented Generation)
@@ -48,6 +49,7 @@ class RAGService:
             context_chunks: List of relevant chunks from vector search
             project_name: Optional project name for context
             stream: If True, returns an async generator that yields response chunks. If False, returns complete response string.
+            graph_context_lines: Optional relationship summaries from graph expansion (Phase 3)
             
         Returns:
             If stream=False: Generated response string from LLM, or fallback summary if Ollama unavailable
@@ -62,7 +64,11 @@ class RAGService:
                 return "I couldn't find any relevant information to answer your question."
         
         # Format context from chunks
-        context_text = self._format_context(context_chunks, project_name)
+        context_text = self._format_context(
+            context_chunks,
+            project_name,
+            graph_context_lines=graph_context_lines,
+        )
         
         # Build prompt
         prompt = self._build_prompt(query, context_text, project_name)
@@ -93,7 +99,8 @@ class RAGService:
     def _format_context(
         self,
         chunks: List[Dict[str, Any]],
-        project_name: Optional[str] = None
+        project_name: Optional[str] = None,
+        graph_context_lines: Optional[List[str]] = None,
     ) -> str:
         """
         Format retrieved chunks as context text.
@@ -122,19 +129,25 @@ class RAGService:
                 current_chunks.append(f"{source_info}\n{chunk_text}")
 
         if not past_chunks:
-            return "\n\n---\n\n".join(current_chunks)
+            body = "\n\n---\n\n".join(current_chunks)
+        else:
+            # Phase 3.5: separate current vs past project context
+            parts = []
+            if current_chunks:
+                label = f"Context from Current Project ({project_name or 'current'}):"
+                parts.append(label)
+                parts.append("\n\n".join(current_chunks))
+            if past_chunks:
+                parts.append("Context from Similar Past Projects:")
+                for proj_label, text, src in past_chunks:
+                    parts.append(f"  [{proj_label}] - {src}\n{text}")
+            body = "\n\n---\n\n".join(parts)
 
-        # Phase 3.5: separate current vs past project context
-        parts = []
-        if current_chunks:
-            label = f"Context from Current Project ({project_name or 'current'}):"
-            parts.append(label)
-            parts.append("\n\n".join(current_chunks))
-        if past_chunks:
-            parts.append("Context from Similar Past Projects:")
-            for proj_label, text, src in past_chunks:
-                parts.append(f"  [{proj_label}] - {src}\n{text}")
-        return "\n\n---\n\n".join(parts)
+        graph_lines = [ln for ln in (graph_context_lines or []) if (ln or "").strip()]
+        if graph_lines:
+            graph_section = "Graph context (relationships from knowledge graph):\n" + "\n".join(graph_lines)
+            return f"{body}\n\n---\n\n{graph_section}" if body else graph_section
+        return body
     
     def _build_prompt(
         self,

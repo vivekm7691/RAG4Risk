@@ -114,6 +114,18 @@ class QueryRequest(BaseModel):
         False,
         description="When true and server QUERY_INTENT_ENABLED, run intent LLM and weighted per-type retrieval (requires project_name)",
     )
+    use_graph_augmentation: bool = Field(
+        False,
+        description="When true and server GRAPH_ENABLED, expand vector hits via Neo4j neighborhood (requires project_name)",
+    )
+
+
+class GraphExpansionInfo(BaseModel):
+    """Phase 3: graph-augmented retrieval metadata."""
+
+    enabled: bool = False
+    added_chunk_ids: List[str] = Field(default_factory=list)
+    paths_summary: List[str] = Field(default_factory=list)
 
 
 class PastProjectIntentSlots(BaseModel):
@@ -159,6 +171,10 @@ class QueryResponse(BaseModel):
         None,
         description="Phase 3.75: intent summary, weights, and per-type slot counts when use_query_intent was applied",
     )
+    graph_expansion: Optional[GraphExpansionInfo] = Field(
+        None,
+        description="Phase 3: graph-augmented chunks and relationship paths when use_graph_augmentation was applied",
+    )
 
 
 # Phase 3.5: Retrieval preview (no LLM call)
@@ -179,6 +195,7 @@ class RetrievalPreviewResponse(BaseModel):
     query: str
     project_name: Optional[str] = None
     query_intent: Optional[QueryIntentInfo] = None
+    graph_expansion: Optional[GraphExpansionInfo] = None
 
 
 # Streaming response models (for documentation and type hints)
@@ -196,6 +213,7 @@ class StreamingSources(BaseModel):
     project_name: Optional[str] = None
     similar_projects: Optional[List[SimilarProjectPreview]] = None
     query_intent: Optional[QueryIntentInfo] = None
+    graph_expansion: Optional[GraphExpansionInfo] = None
 
 
 class StreamingDone(BaseModel):

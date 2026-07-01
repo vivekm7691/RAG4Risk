@@ -17,6 +17,7 @@ from app.models.query import (
     SimilarProjectPreview,
     QueryIntentInfo,
     PastProjectIntentSlots,
+    GraphExpansionInfo,
     metadata_filters_for_vector_search,
 )
 from app.services.embeddings import EmbeddingService
@@ -59,6 +60,80 @@ def _intent_will_run(request: QueryRequest) -> bool:
         and request.use_query_intent
         and bool(request.project_name)
     )
+
+
+def _graph_augmentation_will_run(request: QueryRequest) -> bool:
+    return (
+        settings.GRAPH_ENABLED
+        and request.use_graph_augmentation
+        and bool(request.project_name)
+    )
+
+
+async def _augment_with_graph_if_enabled(
+    request: QueryRequest,
+    chunks: List[Dict[str, Any]],
+) -> tuple[List[Dict[str, Any]], Optional[GraphExpansionInfo], Optional[List[str]]]:
+    if not _graph_augmentation_will_run(request) or not chunks:
+        return chunks, None, None
+
+    from app.services.graph_retrieval import augment_chunks_with_graph
+
+    try:
+        result = await augment_chunks_with_graph(
+            chunks,
+            project_name=request.project_name or "",
+        )
+        return (
+            result.chunks,
+            GraphExpansionInfo(
+                enabled=True,
+                added_chunk_ids=result.added_chunk_ids,
+                paths_summary=result.paths_summary,
+            ),
+            result.graph_context_lines or None,
+        )
+    except Exception as exc:
+        logger.warning("Graph augmentation failed, using vector-only: %s", exc)
+        return chunks, GraphExpansionInfo(enabled=True), None
+
+
+def _normalize_context_chunks(search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    context_chunks = []
+    for r in search_results:
+        if isinstance(r, dict):
+            text = r.get("text", "")
+            meta = r.get("metadata", r) if "metadata" in r else r
+            chunk = {"text": text, "metadata": meta}
+            if "is_past_project" in r:
+                chunk["is_past_project"] = r["is_past_project"]
+        else:
+            chunk = {"text": r["text"], "metadata": r["metadata"]}
+        context_chunks.append(chunk)
+    return context_chunks
+
+
+def _search_results_to_sources(search_results: List[Dict[str, Any]]) -> List[SourceCitation]:
+    sources = []
+    for r in search_results:
+        meta = r.get("metadata", r) if isinstance(r, dict) and "metadata" in r else (r if isinstance(r, dict) else {})
+        dist = r.get("distance") if isinstance(r, dict) else None
+        relevance_score = max(0.0, 1.0 - (dist / 2.0)) if dist is not None else None
+        is_past = r.get("is_past_project", False) if isinstance(r, dict) else False
+        sources.append(
+            SourceCitation(
+                document_id=meta.get("document_id", ""),
+                document_name=meta.get("file_name", "Unknown document"),
+                chunk_id=meta.get("chunk_id", ""),
+                project_name=meta.get("project_name", ""),
+                document_type=meta.get("document_type", ""),
+                relevance_score=relevance_score,
+                is_past_project=is_past,
+                row_number=meta.get("row_number"),
+                sheet_name=meta.get("sheet_name"),
+            )
+        )
+    return sources
 
 
 async def _classify_intent(request: QueryRequest) -> QueryIntentResult:
@@ -183,17 +258,8 @@ async def retrieve_preview(request: QueryRequest):
     weights = intent_ir.document_weights if intent_ir else None
     prio = intent_ir.priority_order if intent_ir else None
 
-    if not request.include_past_projects and not intent_ir:
-        return RetrievalPreviewResponse(
-            similar_projects=[],
-            chunks=[],
-            query=request.query,
-            project_name=request.project_name,
-            query_intent=None,
-        )
-
     try:
-        if request.include_past_projects:
+        if request.include_past_projects and request.project_name:
             cw, pw = _context_weighting_from_request(request)
             force = request.force_project.model_dump() if request.force_project else None
             result = await query_service.retrieve_with_past_projects(
@@ -211,7 +277,7 @@ async def retrieve_preview(request: QueryRequest):
             )
             similar = _similar_from_result(result)
             intent_info = _intent_info_from_result(intent_ir, request, result["similar_projects"]) if intent_ir else None
-        else:
+        elif intent_ir:
             result = await query_service.retrieve_with_past_projects(
                 query=request.query,
                 project_name=request.project_name,
@@ -226,20 +292,32 @@ async def retrieve_preview(request: QueryRequest):
                 filters=filters_dict,
             )
             similar = []
-            intent_info = (
-                _intent_info_from_result(
-                    intent_ir,
-                    request,
-                    [],
-                    n_current_override=request.top_k,
-                    n_past_override=0,
-                )
-                if intent_ir
-                else None
+            intent_info = _intent_info_from_result(
+                intent_ir,
+                request,
+                [],
+                n_current_override=request.top_k,
+                n_past_override=0,
             )
+        else:
+            query_embedding = embedding_service.generate_embedding(request.query).tolist()
+            vector_store = await get_vector_store()
+            chunks = await vector_store.search(
+                query_embedding=query_embedding,
+                top_k=request.top_k,
+                project_name=request.project_name,
+                document_type=None,
+                filters=filters_dict,
+            )
+            result = {"similar_projects": [], "chunks": chunks}
+            similar = []
+            intent_info = None
     except Exception as e:
         logger.exception("Retrieve preview failed")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+    search_results, graph_expansion, _ = await _augment_with_graph_if_enabled(request, result["chunks"])
+    result = {**result, "chunks": search_results}
 
     chunks = _preview_chunks_from_result(result)
     return RetrievalPreviewResponse(
@@ -248,6 +326,7 @@ async def retrieve_preview(request: QueryRequest):
         query=request.query,
         project_name=request.project_name,
         query_intent=intent_info,
+        graph_expansion=graph_expansion,
     )
 
 
@@ -326,6 +405,11 @@ async def query_documents(request: QueryRequest):
                     n_past_override=0,
                 )
 
+        search_results, graph_expansion, graph_context_lines = await _augment_with_graph_if_enabled(
+            request,
+            search_results or [],
+        )
+
         embedding_time = time.time() - embedding_start
         search_time = 0.0
 
@@ -338,17 +422,11 @@ async def query_documents(request: QueryRequest):
                 project_name=request.project_name,
                 similar_projects=_similar_projects_to_preview(similar_projects_result),
                 query_intent=intent_info,
+                graph_expansion=graph_expansion,
             )
 
         format_start = time.time()
-        context_chunks = []
-        for r in search_results:
-            if isinstance(r, dict):
-                text = r.get("text", "")
-                meta = r.get("metadata", r) if "metadata" in r else r
-            else:
-                text, meta = r["text"], r["metadata"]
-            context_chunks.append({"text": text, "metadata": meta})
+        context_chunks = _normalize_context_chunks(search_results)
         format_time = time.time() - format_start
 
         model_to_use = request.model or settings.OLLAMA_MODEL
@@ -359,28 +437,11 @@ async def query_documents(request: QueryRequest):
             context_chunks=context_chunks,
             project_name=request.project_name,
             stream=False,
+            graph_context_lines=graph_context_lines,
         )
         llm_time = time.time() - llm_start
 
-        sources = []
-        for r in search_results:
-            meta = r.get("metadata", r) if isinstance(r, dict) and "metadata" in r else (r if isinstance(r, dict) else {})
-            dist = r.get("distance") if isinstance(r, dict) else None
-            relevance_score = max(0.0, 1.0 - (dist / 2.0)) if dist is not None else None
-            is_past = r.get("is_past_project", False) if isinstance(r, dict) else False
-            sources.append(
-                SourceCitation(
-                    document_id=meta.get("document_id", ""),
-                    document_name=meta.get("file_name", "Unknown document"),
-                    chunk_id=meta.get("chunk_id", ""),
-                    project_name=meta.get("project_name", ""),
-                    document_type=meta.get("document_type", ""),
-                    relevance_score=relevance_score,
-                    is_past_project=is_past,
-                    row_number=meta.get("row_number"),
-                    sheet_name=meta.get("sheet_name"),
-                )
-            )
+        sources = _search_results_to_sources(search_results)
 
         total_time = time.time() - total_start
         return QueryResponse(
@@ -390,6 +451,7 @@ async def query_documents(request: QueryRequest):
             project_name=request.project_name,
             similar_projects=_similar_projects_to_preview(similar_projects_result),
             query_intent=intent_info,
+            graph_expansion=graph_expansion,
         )
 
     except Exception as e:
@@ -476,6 +538,11 @@ async def query_documents_stream(request: QueryRequest):
                         n_past_override=0,
                     )
 
+            search_results, graph_expansion, graph_context_lines = await _augment_with_graph_if_enabled(
+                request,
+                search_results or [],
+            )
+
             embedding_time = time.time() - embedding_start
             search_time = 0.0
             logger.info(
@@ -493,6 +560,8 @@ async def query_documents_stream(request: QueryRequest):
                 }
                 if intent_info:
                     sources_data["query_intent"] = intent_info.model_dump(mode="json")
+                if graph_expansion:
+                    sources_data["graph_expansion"] = graph_expansion.model_dump(mode="json")
                 yield f"data: {json.dumps(sources_data)}\n\n"
 
                 answer_data = {
@@ -514,32 +583,10 @@ async def query_documents_stream(request: QueryRequest):
                 yield f"data: {json.dumps(done_data)}\n\n"
                 return
 
-            sources = []
-            for result in search_results:
-                meta = result.get("metadata", result) if isinstance(result, dict) else {}
-                dist = result.get("distance") if isinstance(result, dict) else None
-                relevance_score = max(0.0, 1.0 - (dist / 2.0)) if dist is not None else None
-                is_past = result.get("is_past_project", False) if isinstance(result, dict) else False
-                sources.append(
-                    SourceCitation(
-                        document_id=meta.get("document_id", ""),
-                        document_name=meta.get("file_name", "Unknown document"),
-                        chunk_id=meta.get("chunk_id", ""),
-                        project_name=meta.get("project_name", ""),
-                        document_type=meta.get("document_type", ""),
-                        relevance_score=relevance_score,
-                        is_past_project=is_past,
-                        row_number=meta.get("row_number"),
-                        sheet_name=meta.get("sheet_name"),
-                    )
-                )
+            sources = _search_results_to_sources(search_results)
 
             format_start = time.time()
-            context_chunks = []
-            for r in search_results:
-                text = r.get("text", "")
-                meta = r.get("metadata", r) if isinstance(r, dict) and "metadata" in r else (r if isinstance(r, dict) else {})
-                context_chunks.append({"text": text, "metadata": meta})
+            context_chunks = _normalize_context_chunks(search_results)
             format_time = time.time() - format_start
 
             sources_data = {
@@ -554,6 +601,8 @@ async def query_documents_stream(request: QueryRequest):
                     sources_data["similar_projects"] = [p.model_dump(mode="json") for p in rich]
             if intent_info:
                 sources_data["query_intent"] = intent_info.model_dump(mode="json")
+            if graph_expansion:
+                sources_data["graph_expansion"] = graph_expansion.model_dump(mode="json")
             yield f"data: {json.dumps(sources_data)}\n\n"
 
             model_to_use = request.model or settings.OLLAMA_MODEL
@@ -566,6 +615,7 @@ async def query_documents_stream(request: QueryRequest):
                     context_chunks=context_chunks,
                     project_name=request.project_name,
                     stream=True,
+                    graph_context_lines=graph_context_lines,
                 )
 
                 generator = await async_gen

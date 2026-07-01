@@ -84,6 +84,8 @@ class Settings(BaseSettings):
     GRAPH_NEIGHBORHOOD_DEFAULT_LIMIT: int = 50
     GRAPH_MAX_DEPTH: int = 3
     GRAPH_QUERY_TIMEOUT_SECONDS: float = 10.0
+    # Phase 3: max extra chunks from graph neighborhood beyond vector top_k
+    GRAPH_RETRIEVAL_EXTRA_BUDGET: int = 5
     # Phase 2: post-ingest LLM relation extraction (Word documents)
     GRAPH_EXTRACT_ON_INGEST: bool = True
     GRAPH_EXTRACT_MAX_CHUNKS: int = 20
