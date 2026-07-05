@@ -1,0 +1,141 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        SKIP_MODEL_DOWNLOAD: ${SKIP_MODEL_DOWNLOAD:-false}
+    container_name: rag4risk-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://ollama:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2:3b}
+      - OLLAMA_TIMEOUT=${OLLAMA_TIMEOUT:-3000.0}
+      - OLLAMA_NUM_CTX=${OLLAMA_NUM_CTX:-16384}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-all-MiniLM-L6-v2}
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - QDRANT_COLLECTION_NAME=${QDRANT_COLLECTION_NAME:-rag4risk_documents}
+      - QDRANT_SEARCH_HNSW_EF=${QDRANT_SEARCH_HNSW_EF:-128}
+      - CHUNK_SIZE=${CHUNK_SIZE:-1000}
+      - CHUNK_OVERLAP=${CHUNK_OVERLAP:-200}
+      - TOP_K=${TOP_K:-5}
+      # SSL Configuration for HuggingFace model downloads
+      # Set HF_HUB_DISABLE_SSL_VERIFY=true if you have corporate proxy with self-signed certificates
+      - HF_HUB_DISABLE_SSL_VERIFY=${HF_HUB_DISABLE_SSL_VERIFY:-false}
+      # Phase 3.75: Query Intent
+      - QUERY_INTENT_ENABLED=${QUERY_INTENT_ENABLED:-true}
+      - INTENT_LLM_BASE_URL=${INTENT_LLM_BASE_URL:-}
+      - INTENT_LLM_MODEL=${INTENT_LLM_MODEL:-deepseek-r1}
+      - INTENT_LLM_TIMEOUT_SECONDS=${INTENT_LLM_TIMEOUT_SECONDS:-1200}
+      - INTENT_LLM_MAX_TOKENS=${INTENT_LLM_MAX_TOKENS:-4096}
+      - INTENT_LLM_TEMPERATURE=${INTENT_LLM_TEMPERATURE:-0.1}
+      # Knowledge graph (Neo4j) — Phase 1
+      - GRAPH_ENABLED=${GRAPH_ENABLED:-false}
+      - NEO4J_URI=${NEO4J_URI:-bolt://neo4j:7687}
+      - NEO4J_USER=${NEO4J_USER:-neo4j}
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-rag4risk-dev}
+      - NEO4J_DATABASE=${NEO4J_DATABASE:-neo4j}
+      - GRAPH_EXTRACT_ON_INGEST=${GRAPH_EXTRACT_ON_INGEST:-true}
+      - GRAPH_EXTRACT_MAX_CHUNKS=${GRAPH_EXTRACT_MAX_CHUNKS:-20}
+      - GRAPH_EXTRACT_TIMEOUT_SECONDS=${GRAPH_EXTRACT_TIMEOUT_SECONDS:-120}
+      - GRAPH_QUERY_TIMEOUT_SECONDS=${GRAPH_QUERY_TIMEOUT_SECONDS:-10.0}
+      - GRAPH_RETRIEVAL_EXTRA_BUDGET=${GRAPH_RETRIEVAL_EXTRA_BUDGET:-5}
+      - GRAPH_MAX_DEGREE_PER_SEED=${GRAPH_MAX_DEGREE_PER_SEED:-25}
+      - GRAPH_MAX_SEEDS=${GRAPH_MAX_SEEDS:-10}
+      - GRAPH_CONNECTION_CHECK_TTL_SECONDS=${GRAPH_CONNECTION_CHECK_TTL_SECONDS:-30.0}
+    volumes:
+      - ./backend:/app
+      - backend_data:/app/data
+      - huggingface_cache:/root/.cache/huggingface  # Persist HuggingFace model cache
+    depends_on:
+      - qdrant
+      - ollama
+    networks:
+      - rag4risk-network
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: rag4risk-frontend
+    ports:
+      - "3000:80"
+    environment:
+      - VITE_API_BASE_URL=http://localhost:8000
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    networks:
+      - rag4risk-network
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: rag4risk-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - rag4risk-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: rag4risk-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - rag4risk-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          memory: 8G
+
+  neo4j:
+    image: neo4j:5-community
+    container_name: rag4risk-neo4j
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      - NEO4J_AUTH=${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-rag4risk-dev}
+      - NEO4J_PLUGINS=["apoc"]
+    volumes:
+      - neo4j_data:/data
+    networks:
+      - rag4risk-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:7474 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+volumes:
+  backend_data:
+  qdrant_data:
+  ollama_data:
+  neo4j_data:
+  huggingface_cache:  # Persist HuggingFace model cache to avoid re-downloading
+
+networks:
+  rag4risk-network:
+    driver: bridge
+

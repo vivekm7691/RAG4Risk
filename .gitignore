@@ -41,4 +41,7 @@ Thumbs.db
 *.db
 *.sqlite
 chroma_data/
+Samples/
+GitHub Branching Strategy for RAG4Risk.md
+GitHub Branching Strategy for RAG4Risk.docx
 
