@@ -88,3 +88,4 @@ Persist LLM nodes/edges when `confidence >= 0.75`. Assumptions require `is_expli
 - **Phase 2:** Ingest hooks + relation extractor ✓ (`graph_sync_service`, `relation_extractor_service`)
 - **Phase 3:** Graph-augmented retrieval (`graph_retrieval.py`, `use_graph_augmentation` on query API) ✓
 - **Phase 4:** Observability + guardrails — enriched `graph_expansion` metadata, stage timings, Neo4j reachability degrade, per-seed degree cap, 504 on LLM timeout, frontend toggle ✓
+- **Phase 5:** Offline recall@k eval harness (`eval/graph_eval_set.json`, `run_graph_eval.py`, `graph_eval_service.py`) ✓
