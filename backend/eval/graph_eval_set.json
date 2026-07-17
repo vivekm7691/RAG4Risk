@@ -1,0 +1,119 @@
+{
+  "name": "rag4risk-graph-eval-v1",
+  "description": "Phase 5 offline recall@k set. Replace must_include_chunk_ids with IDs from your Qdrant corpus after ingest. Cases with empty must_include are skipped until filled.",
+  "cases": [
+    {
+      "id": "freedom-sow54-implied-risks-commercial",
+      "query": "what are the top implied risks in the project?",
+      "project_name": "Freedom ENC Upgrade SOW 54",
+      "must_include_chunk_ids": [
+        "5d8ca5b9-f1d3-4615-ad4e-a8f00577f1a7"
+      ],
+      "top_k": 10,
+      "enabled": true,
+      "notes": "Commercial terms / milestone invoicing — often graph-added vs vector-only exclusions hits.",
+      "tags": ["graph-sensitive", "sow", "risk"]
+    },
+    {
+      "id": "freedom-sow54-cloud-assessment-dependency",
+      "query": "What happens if Freedom Cloud Assessment is not completed on time?",
+      "project_name": "Freedom ENC Upgrade SOW 54",
+      "must_include_chunk_ids": [
+        "26d68d81-b852-42f1-a7a5-997ed964119a"
+      ],
+      "top_k": 10,
+      "enabled": true,
+      "notes": "Dependency / suspension clause chunk.",
+      "tags": ["sow", "dependency"]
+    },
+    {
+      "id": "freedom-sow54-uat-responsibility",
+      "query": "Who is responsible for user acceptance testing?",
+      "project_name": "Freedom ENC Upgrade SOW 54",
+      "must_include_chunk_ids": [
+        "43257df1-70bb-4140-ae27-71a41e151540"
+      ],
+      "top_k": 10,
+      "enabled": true,
+      "notes": "UAT / governance section; graph paths often include EXTRACTED_FROM activity nodes.",
+      "tags": ["graph-sensitive", "uat"]
+    },
+    {
+      "id": "freedom-sow54-exclusions-scope",
+      "query": "What is excluded from the scope of this SOW?",
+      "project_name": "Freedom ENC Upgrade SOW 54",
+      "must_include_chunk_ids": [
+        "b09605f0-b23b-4d92-90bb-804ea9a42dc7"
+      ],
+      "top_k": 10,
+      "enabled": true,
+      "tags": ["sow", "scope"]
+    },
+    {
+      "id": "freedom-sow54-pricing-fixed-fee",
+      "query": "What is the fixed fee for this SOW?",
+      "project_name": "Freedom ENC Upgrade SOW 54",
+      "must_include_chunk_ids": [
+        "18aad75a-c44d-4e17-a942-ea40bb853ca9",
+        "5d8ca5b9-f1d3-4615-ad4e-a8f00577f1a7"
+      ],
+      "top_k": 10,
+      "enabled": true,
+      "notes": "Requires both commercial terms chunks (multi must-include).",
+      "tags": ["sow", "commercial"]
+    },
+    {
+      "id": "freedom-sow54-deliverables-impact-assessment",
+      "query": "What deliverables will CSG provide under this SOW?",
+      "project_name": "Freedom ENC Upgrade SOW 54",
+      "must_include_chunk_ids": [
+        "f0c1fc9f-1741-4264-80dd-188d4b96fe41"
+      ],
+      "top_k": 10,
+      "enabled": true,
+      "tags": ["sow", "deliverable"]
+    },
+    {
+      "id": "freedom-sow54-encompass-objective",
+      "query": "What is the objective of the Encompass V12 upgrade?",
+      "project_name": "Freedom ENC Upgrade SOW 54",
+      "must_include_chunk_ids": [
+        "9e038244-5e46-404d-9ebf-624ef6107203"
+      ],
+      "top_k": 10,
+      "enabled": true,
+      "tags": ["sow", "scope"]
+    },
+    {
+      "id": "freedom-sow54-term-duration",
+      "query": "What is the term or duration of this SOW?",
+      "project_name": "Freedom ENC Upgrade SOW 54",
+      "must_include_chunk_ids": [
+        "29937ad8-8457-4262-8fbe-a1d55b850f2c"
+      ],
+      "top_k": 10,
+      "enabled": true,
+      "tags": ["sow", "commercial"]
+    },
+    {
+      "id": "placeholder-risk-register-severity",
+      "query": "List high severity risks from the risk register",
+      "project_name": "YOUR_PROJECT_NAME",
+      "must_include_chunk_ids": [],
+      "top_k": 10,
+      "enabled": true,
+      "notes": "Template: set project_name and Excel row chunk_id after uploading risk register.",
+      "tags": ["excel", "risk-register", "template"]
+    },
+    {
+      "id": "placeholder-solution-vs-sow",
+      "query": "How does the solution description relate to SOW deliverable D-12?",
+      "project_name": "YOUR_PROJECT_NAME",
+      "must_include_chunk_ids": [],
+      "top_k": 10,
+      "enabled": false,
+      "notes": "Enable after Phase 5.2 cross-artifact linking and ingest SOW + solution docs.",
+      "tags": ["cross-artifact", "template", "phase-5.2"]
+    }
+  ]
+}
