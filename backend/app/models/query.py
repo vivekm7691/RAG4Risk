@@ -121,7 +121,7 @@ class QueryRequest(BaseModel):
 
 
 class GraphExpansionInfo(BaseModel):
-    """Phase 3–4: graph-augmented retrieval metadata."""
+    """Phase 3–5.1: graph-augmented retrieval metadata."""
 
     enabled: bool = False
     added_chunk_ids: List[str] = Field(default_factory=list)
@@ -129,9 +129,15 @@ class GraphExpansionInfo(BaseModel):
     vector_chunk_count: int = 0
     graph_added_count: int = 0
     seed_count: int = 0
+    text_seed_count: int = 0
     degraded: bool = False
     degrade_reason: Optional[str] = None
     timing_ms: Optional[Dict[str, float]] = None
+    merge_strategy: Optional[str] = None
+    chunk_sources: Optional[Dict[str, str]] = Field(
+        None,
+        description="chunk_id -> vector | graph | both",
+    )
 
 
 class QueryTimings(BaseModel):

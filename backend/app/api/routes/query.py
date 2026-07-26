@@ -83,9 +83,12 @@ def _graph_expansion_from_result(result) -> GraphExpansionInfo:
         vector_chunk_count=result.vector_chunk_count,
         graph_added_count=result.graph_added_count,
         seed_count=result.seed_count,
+        text_seed_count=getattr(result, "text_seed_count", 0) or 0,
         degraded=result.degraded,
         degrade_reason=result.degrade_reason,
         timing_ms=result.timing_ms or None,
+        merge_strategy=getattr(result, "merge_strategy", None),
+        chunk_sources=getattr(result, "chunk_sources", None) or None,
     )
 
 
@@ -104,6 +107,7 @@ async def _augment_with_graph_if_enabled(
         result = await augment_chunks_with_graph(
             chunks,
             project_name=request.project_name or "",
+            query=request.query or "",
         )
         graph_elapsed = time.perf_counter() - graph_start
         info = _graph_expansion_from_result(result)
