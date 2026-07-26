@@ -90,6 +90,7 @@ async def retrieve_for_eval(
     graph_result = await augment_chunks_with_graph(
         vector_chunks,
         project_name=project_name,
+        query=query,
         depth=depth,
         extra_budget=extra_budget,
     )

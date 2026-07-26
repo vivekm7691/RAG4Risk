@@ -74,7 +74,7 @@ export interface QueryIntentInfo {
   slots_past_by_project: PastProjectIntentSlots[];
 }
 
-/** Phase 3–4: graph-augmented retrieval metadata when use_graph_augmentation is true. */
+/** Phase 3–5.1: graph-augmented retrieval metadata when use_graph_augmentation is true. */
 export interface GraphExpansionInfo {
   enabled: boolean;
   added_chunk_ids: string[];
@@ -82,9 +82,12 @@ export interface GraphExpansionInfo {
   vector_chunk_count?: number;
   graph_added_count?: number;
   seed_count?: number;
+  text_seed_count?: number;
   degraded?: boolean;
   degrade_reason?: string | null;
   timing_ms?: Record<string, number> | null;
+  merge_strategy?: string | null;
+  chunk_sources?: Record<string, string> | null;
 }
 
 export interface RetrievePreviewRequest {

@@ -91,6 +91,12 @@ class Settings(BaseSettings):
     GRAPH_CONNECTION_CHECK_TTL_SECONDS: float = 30.0
     # Phase 3: max extra chunks from graph neighborhood beyond vector top_k
     GRAPH_RETRIEVAL_EXTRA_BUDGET: int = 5
+    # Phase 5.1: merge strategy after vector + graph expansion
+    # append = vector order then graph extras; rrf = reciprocal rank fusion; diversity = prefer underrepresented document_type
+    GRAPH_MERGE_STRATEGY: str = "append"
+    # When true, also seed Neo4j expansion via full-text on node labels (requires query)
+    GRAPH_TEXT_SEARCH_SEED_ENABLED: bool = False
+    GRAPH_TEXT_SEARCH_SEED_LIMIT: int = 10
     # Phase 2: post-ingest LLM relation extraction (Word documents)
     GRAPH_EXTRACT_ON_INGEST: bool = True
     GRAPH_EXTRACT_MAX_CHUNKS: int = 20

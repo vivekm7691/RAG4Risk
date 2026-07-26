@@ -6,7 +6,7 @@ import logging
 import re
 import time
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
+from typing import Any, Dict, List, Optional, Protocol, Set, runtime_checkable
 
 from pydantic import BaseModel, Field
 from neo4j import AsyncGraphDatabase, AsyncDriver
@@ -95,6 +95,14 @@ class GraphStore(Protocol):
         *,
         project_name: str,
     ) -> GraphTextSearchResult: ...
+
+    async def chunks_linked_to_nodes(
+        self,
+        node_ids: List[str],
+        *,
+        project_name: str,
+        limit: int = 50,
+    ) -> GraphNeighborhoodResult: ...
 
 
 def document_id_from_node_id(node_id: str) -> Optional[str]:
@@ -186,6 +194,15 @@ class DisabledGraphStore:
         project_name: str,
     ) -> GraphTextSearchResult:
         return GraphTextSearchResult()
+
+    async def chunks_linked_to_nodes(
+        self,
+        node_ids: List[str],
+        *,
+        project_name: str,
+        limit: int = 50,
+    ) -> GraphNeighborhoodResult:
+        return GraphNeighborhoodResult()
 
 
 class Neo4jGraphStore:
@@ -436,6 +453,61 @@ class Neo4jGraphStore:
             logger.warning("Graph full-text search unavailable, returning empty: %s", exc)
 
         return GraphTextSearchResult(node_ids=node_ids, scores=scores)
+
+    async def chunks_linked_to_nodes(
+        self,
+        node_ids: List[str],
+        *,
+        project_name: str,
+        limit: int = 50,
+    ) -> GraphNeighborhoodResult:
+        """Resolve semantic/other nodes to linked Chunk IDs (1–2 hops)."""
+        seeds = [nid for nid in (node_ids or []) if nid]
+        if not seeds:
+            return GraphNeighborhoodResult()
+
+        limit = max(1, int(limit))
+        project_name = project_name.strip()
+        depth = min(2, settings.GRAPH_MAX_DEPTH)
+        driver = await self._get_driver()
+        query = f"""
+        MATCH (seed:GraphNode)
+        WHERE seed.node_id IN $seed_ids AND seed.project_name = $project_name
+        MATCH path = (seed)-[*1..{depth}]-(chunk:GraphNode:Chunk)
+        WHERE chunk.project_name = $project_name
+        WITH chunk, path
+        ORDER BY length(path)
+        RETURN DISTINCT chunk.node_id AS node_id,
+               [r IN relationships(path) | type(r)] AS rel_types
+        LIMIT $limit
+        """
+        chunk_ids_out: List[str] = []
+        paths_summary: List[str] = []
+        seen: Set[str] = set()
+
+        async with driver.session(database=self._database) as session:
+            result = await session.run(
+                query,
+                seed_ids=seeds,
+                project_name=project_name,
+                limit=limit,
+            )
+            async for record in result:
+                nid = record["node_id"]
+                cid = _strip_chunk_prefix(nid)
+                if cid in seen:
+                    continue
+                seen.add(cid)
+                chunk_ids_out.append(cid)
+                rel_types = record["rel_types"] or []
+                if rel_types:
+                    paths_summary.append(f"…-{'-'.join(rel_types)}->{nid}")
+
+        return GraphNeighborhoodResult(
+            chunk_ids=chunk_ids_out,
+            node_ids=list(seeds),
+            paths_summary=paths_summary[:20],
+        )
 
 
 async def get_graph_store() -> GraphStore:
