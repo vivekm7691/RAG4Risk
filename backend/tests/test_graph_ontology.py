@@ -24,6 +24,12 @@ def test_graph_id_helpers():
     assert graph_id_statement_of_work("doc1") == "sow:doc1"
 
 
+def test_graph_id_system_component():
+    from app.models.graph import graph_id_system_component
+
+    assert graph_id_system_component("Proj A", "Billing") == "comp:proj_a:billing"
+
+
 def test_normalize_slug():
     assert normalize_slug("  Hello World! ") == "hello_world"
     assert normalize_slug("") == "unknown"
@@ -78,3 +84,11 @@ def test_filter_extraction_by_confidence():
     assert len(out.nodes) == 1
     assert out.nodes[0].node_id == "n1"
     assert len(out.edges) == 0  # n2 dropped, edge orphaned
+
+
+def test_solution_extractable_edges_include_cross_state():
+    from app.models.graph import SOLUTION_EXTRACTABLE_EDGES
+
+    assert EdgeType.DESCRIBES_CURRENT_STATE_OF in SOLUTION_EXTRACTABLE_EDGES
+    assert EdgeType.GAPS in SOLUTION_EXTRACTABLE_EDGES
+    assert EdgeType.IMPLEMENTS not in SOLUTION_EXTRACTABLE_EDGES

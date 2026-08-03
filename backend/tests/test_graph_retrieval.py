@@ -42,6 +42,11 @@ def _mock_graph_settings(mock_settings):
     mock_settings.GRAPH_MERGE_STRATEGY = "append"
     mock_settings.GRAPH_TEXT_SEARCH_SEED_ENABLED = False
     mock_settings.GRAPH_TEXT_SEARCH_SEED_LIMIT = 10
+    mock_settings.GRAPH_CROSS_LINK_ENABLED = False
+    mock_settings.GRAPH_CROSS_LINK_MAX_DEPTH = 3
+    mock_settings.GRAPH_CROSS_LINK_EDGE_WHITELIST = (
+        "IMPLEMENTS,ADDRESSES,TRACES_TO,SAME_AS,DESCRIBES_CURRENT_STATE_OF,GAPS"
+    )
 
 
 def test_seed_chunk_ids_current_project_only():
@@ -254,3 +259,32 @@ async def test_augment_chunks_with_graph_caps_seeds():
         await augment_chunks_with_graph(vector, project_name="P1", query="q")
 
     assert mock_store.neighborhood.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_augment_chunks_with_graph_cross_link_whitelist():
+    vector = [_vector_chunk("seed-1")]
+    neighborhood = MagicMock()
+    neighborhood.chunk_ids = []
+    neighborhood.paths_summary = []
+    neighborhood.node_ids = []
+
+    mock_store = AsyncMock()
+    mock_store.neighborhood = AsyncMock(return_value=neighborhood)
+    mock_store.text_search_seed = AsyncMock(return_value=MagicMock(node_ids=[]))
+
+    with patch("app.services.graph_retrieval.get_graph_store", AsyncMock(return_value=mock_store)), patch(
+        "app.services.graph_retrieval.is_graph_reachable", AsyncMock(return_value=True)
+    ), patch("app.services.graph_retrieval.settings") as mock_settings:
+        _mock_graph_settings(mock_settings)
+        mock_settings.GRAPH_CROSS_LINK_ENABLED = True
+        mock_settings.GRAPH_CROSS_LINK_MAX_DEPTH = 3
+
+        await augment_chunks_with_graph(vector, project_name="P1", query="D-12")
+
+    kwargs = mock_store.neighborhood.call_args.kwargs
+    assert kwargs["depth"] == 3
+    rels = kwargs["relationship_types"]
+    assert "IMPLEMENTS" in rels
+    assert "EXTRACTED_FROM" in rels
+    assert "CONTAINS_CHUNK" in rels

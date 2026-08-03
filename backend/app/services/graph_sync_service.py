@@ -24,6 +24,7 @@ from app.models.graph import (
     graph_id_risk_row,
     graph_id_semantic,
     graph_id_statement_of_work,
+    graph_id_system_component,
 )
 from app.services.graph_store import get_graph_store
 from app.services.relation_extractor_service import (
@@ -249,6 +250,23 @@ def extraction_to_graph(
 
     nodes: List[GraphNode] = []
     for en in result.nodes:
+        if en.node_type == NodeType.SYSTEM_COMPONENT:
+            # Project-scoped hub — do not stamp document_id (survives doc re-ingest)
+            stable_id = graph_id_system_component(project_name, en.label)
+            local_to_stable[en.node_id] = stable_id
+            props = dict(en.properties)
+            props["source"] = props.get("source") or "extraction"
+            nodes.append(
+                GraphNode(
+                    node_id=stable_id,
+                    node_type=NodeType.SYSTEM_COMPONENT,
+                    label=en.label,
+                    project_name=project_name,
+                    properties=props,
+                    confidence=en.confidence,
+                )
+            )
+            continue
         prefix = SEMANTIC_ID_PREFIX.get(en.node_type)
         if not prefix:
             continue
@@ -342,6 +360,18 @@ def build_project_metadata_graph(
                 project_name=project_name,
             )
         )
+        # Phase 5.2: mirror products as SystemComponent hubs for SOW↔solution bridging
+        comp_id = graph_id_system_component(project_name, product)
+        nodes.append(
+            GraphNode(
+                node_id=comp_id,
+                node_type=NodeType.SYSTEM_COMPONENT,
+                label=product.strip(),
+                project_name=project_name,
+                properties={"source": "project_metadata"},
+                confidence=1.0,
+            )
+        )
     return nodes, edges
 
 
@@ -419,17 +449,25 @@ async def sync_document_to_graph(
     await store.upsert_nodes(nodes)
     await store.upsert_edges(edges)
 
+    link_stats: Dict[str, int] = {}
+    if settings.GRAPH_CROSS_LINK_ON_INGEST is True:
+        from app.services.entity_linking_service import resolve_project_cross_links
+
+        link_stats = await resolve_project_cross_links(project_name)
+
     logger.info(
-        "Graph sync document_id=%s nodes=%d edges=%d chunks_extracted=%d",
+        "Graph sync document_id=%s nodes=%d edges=%d chunks_extracted=%d cross_link=%s",
         document_id,
         len(nodes),
         len(edges),
         chunks_extracted,
+        link_stats or "skipped",
     )
     return {
         "nodes": len(nodes),
         "edges": len(edges),
         "chunks_extracted": chunks_extracted,
+        **{f"cross_link_{k}": v for k, v in link_stats.items()},
     }
 
 

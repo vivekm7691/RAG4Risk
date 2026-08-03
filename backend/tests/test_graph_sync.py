@@ -96,6 +96,7 @@ def test_build_project_metadata_graph():
     nodes, edges = build_project_metadata_graph(meta)
     assert any(n.node_type == NodeType.CUSTOMER for n in nodes)
     assert any(n.node_type == NodeType.PRODUCT and "billing" in n.node_id for n in nodes)
+    assert any(n.node_type == NodeType.SYSTEM_COMPONENT for n in nodes)
     assert any(e.edge_type == EdgeType.USES_PRODUCT for e in edges)
 
 

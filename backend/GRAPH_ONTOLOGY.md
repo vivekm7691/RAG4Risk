@@ -2,11 +2,11 @@
 
 Canonical contract for ingest, relation extraction, and Cypher queries. Implemented in [`app/models/graph.py`](app/models/graph.py).
 
-**Version:** `0.2.0-enterprise-sow`
+**Version:** `0.3.0-cross-artifact`
 
 ## Purpose
 
-Complement Qdrant chunk retrieval with **explicit relationships** scoped by **`project_name`**, including delivery/SOW constructs (deliverables, milestones, roles) from your enterprise relationship table.
+Complement Qdrant chunk retrieval with **explicit relationships** scoped by **`project_name`**, including delivery/SOW constructs (deliverables, milestones, roles) and **cross-artifact** links between SOW and solution description documents.
 
 ## StatementOfWork vs Document
 
@@ -42,6 +42,22 @@ On SOW ingest (Phase 2): create **both** nodes and `REPRESENTS_SOW` (Document �
 | `ChangeControl` | `cc:` | SOW |
 | `Role` / `Organization` | `role:` / `org:` | SOW |
 | `Assumption` / `Control` / `Risk` (text) | `asm:` / `ctrl:` / `risk_sem:` | solution, SOW |
+| `SystemComponent` | `comp:{project_slug}:{component_slug}` | Project metadata products + solution as-is mentions |
+
+## Cross-artifact relationships (Phase 5.2)
+
+| Edge | Source → Target | When |
+|------|-----------------|------|
+| `DESCRIBES_CURRENT_STATE_OF` | Activity, Requirement → SystemComponent | Solution extract (as-is) |
+| `IMPLEMENTS` | Activity, Requirement → Deliverable | Resolution pass (solution → SOW) |
+| `ADDRESSES` | Risk, Control → Deliverable, Milestone | Resolution pass |
+| `TRACES_TO` | Requirement → Requirement | Resolution pass |
+| `GAPS` | Risk → Deliverable, Requirement | Solution extract and/or resolution |
+| `SAME_AS` | Semantic ↔ SystemComponent (or semantic ↔ semantic) | Resolution / slug align |
+
+Cross-doc edges from the linker set `properties.link_method` (`id_match` \| `slug` \| …) and `ontology_version=0.3.0-cross-artifact`. Min confidence for resolution edges: **0.80** (stricter than within-doc 0.75).
+
+Enable with `GRAPH_CROSS_LINK_ENABLED` / `GRAPH_CROSS_LINK_ON_INGEST` (see `.env.example`).
 
 ## Enterprise relationships (from your table)
 
@@ -90,3 +106,5 @@ Persist LLM nodes/edges when `confidence >= 0.75`. Assumptions require `is_expli
 - **Phase 4:** Observability + guardrails — enriched `graph_expansion` metadata, stage timings, Neo4j reachability degrade, per-seed degree cap, 504 on LLM timeout, frontend toggle ✓
 - **Phase 5:** Offline recall@k eval harness (`eval/graph_eval_set.json`, `run_graph_eval.py`, `graph_eval_service.py`) ✓
 - **Phase 5.1:** RRF/diversity merge, `text_search_seed`, pass `query` into `graph_retrieval` ✓
+- **Phase 5.2:** `SystemComponent` hubs, entity linking (`entity_linking_service.py`), cross-doc edges, typed retrieval whitelist ✓
+- **Phase 5.3:** Path-aware RRF weights (planned)

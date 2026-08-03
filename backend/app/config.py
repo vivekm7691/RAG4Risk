@@ -101,7 +101,17 @@ class Settings(BaseSettings):
     GRAPH_EXTRACT_ON_INGEST: bool = True
     GRAPH_EXTRACT_MAX_CHUNKS: int = 20
     GRAPH_EXTRACT_TIMEOUT_SECONDS: float = 120.0
-    
+    # Phase 5.2: SOW ↔ solution cross-artifact linking
+    GRAPH_CROSS_LINK_ENABLED: bool = False
+    GRAPH_CROSS_LINK_ON_INGEST: bool = False
+    GRAPH_CROSS_LINK_MIN_CONFIDENCE: float = 0.80
+    GRAPH_CROSS_LINK_MAX_DEPTH: int = 3
+    # Comma-separated EdgeType values for typed neighborhood expansion
+    GRAPH_CROSS_LINK_EDGE_WHITELIST: str = (
+        "IMPLEMENTS,ADDRESSES,TRACES_TO,SAME_AS,DESCRIBES_CURRENT_STATE_OF,GAPS"
+    )
+    GRAPH_CROSS_LINK_MAX_EDGES_PER_SOURCE: int = 5
+
     class Config:
         env_file = ".env"
         case_sensitive = False
