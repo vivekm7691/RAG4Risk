@@ -13,6 +13,7 @@ from app.config import settings
 from app.models.graph import (
     DEFAULT_MIN_CONFIDENCE,
     SEMANTIC_NODES_BY_DOCUMENT_TYPE,
+    SOLUTION_EXTRACTABLE_EDGES,
     SOW_DOCUMENT_TYPE,
     SOW_EXTRACTABLE_EDGES,
     EdgeType,
@@ -62,6 +63,8 @@ def _allowed_node_types(document_type: str) -> List[str]:
 def _allowed_edge_types(document_type: str) -> List[str]:
     if document_type == SOW_DOCUMENT_TYPE:
         edges = SOW_EXTRACTABLE_EDGES
+    elif document_type == "solution description document":
+        edges = SOLUTION_EXTRACTABLE_EDGES
     else:
         edges = frozenset(
             {
@@ -79,6 +82,14 @@ def _allowed_edge_types(document_type: str) -> List[str]:
 def build_extraction_system_prompt(document_type: str) -> str:
     node_types = _allowed_node_types(document_type)
     edge_types = _allowed_edge_types(document_type)
+    solution_hint = ""
+    if document_type == "solution description document":
+        solution_hint = """
+Solution-document rules:
+- For as-is / current-state architecture, emit SystemComponent nodes and DESCRIBES_CURRENT_STATE_OF from Activity or Requirement.
+- For explicit scope mismatches, emit GAPS from Risk to a Deliverable or Requirement mentioned in the same chunk.
+- Do NOT invent SOW deliverable graph IDs; use local node_ids only. Cross-document IMPLEMENTS/TRACES_TO are resolved later.
+"""
     return f"""You extract knowledge-graph entities and relationships from a single document chunk.
 
 Document type: "{document_type}"
@@ -94,7 +105,7 @@ Rules:
 - For edges from the project use source_id "{PROJECT_SOURCE_ID}".
 - Include confidence 0.0-1.0 per node and edge; omit uncertain items (confidence < 0.75).
 - Assumption nodes must set properties.is_explicit true/false.
-
+{solution_hint}
 JSON shape:
 {{"nodes": [{{"node_id": "n1", "node_type": "Requirement", "label": "short label", "properties": {{}}, "confidence": 0.9}}],
   "edges": [{{"edge_type": "EXTRACTED_FROM", "source_id": "n1", "target_id": "{CHUNK_SOURCE_ID}", "evidence_text": "quote", "confidence": 0.85}}]}}

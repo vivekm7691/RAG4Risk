@@ -86,6 +86,7 @@ class GraphStore(Protocol):
         limit: int,
         *,
         project_name: str,
+        relationship_types: Optional[List[str]] = None,
     ) -> GraphNeighborhoodResult: ...
 
     async def text_search_seed(
@@ -104,6 +105,18 @@ class GraphStore(Protocol):
         limit: int = 50,
     ) -> GraphNeighborhoodResult: ...
 
+    async def list_nodes_by_types(
+        self,
+        project_name: str,
+        node_types: List[str],
+    ) -> List[Dict[str, Any]]: ...
+
+    async def delete_resolution_edges(
+        self,
+        project_name: str,
+        edge_types: List[str],
+    ) -> int: ...
+
 
 def document_id_from_node_id(node_id: str) -> Optional[str]:
     """Derive document_id from stable graph node_id patterns (Phase 1 cascade helper)."""
@@ -111,6 +124,9 @@ def document_id_from_node_id(node_id: str) -> Optional[str]:
         return node_id.split(":", 1)[1]
     if node_id.startswith("sow:"):
         return node_id.split(":", 1)[1]
+    # Project-scoped SystemComponent: comp:{project_slug}:{component_slug}
+    if node_id.startswith("comp:"):
+        return None
     m = _ROW_PREFIX_RE.match(node_id)
     if m:
         return m.group(2)
@@ -183,6 +199,7 @@ class DisabledGraphStore:
         limit: int,
         *,
         project_name: str,
+        relationship_types: Optional[List[str]] = None,
     ) -> GraphNeighborhoodResult:
         return GraphNeighborhoodResult()
 
@@ -203,6 +220,20 @@ class DisabledGraphStore:
         limit: int = 50,
     ) -> GraphNeighborhoodResult:
         return GraphNeighborhoodResult()
+
+    async def list_nodes_by_types(
+        self,
+        project_name: str,
+        node_types: List[str],
+    ) -> List[Dict[str, Any]]:
+        return []
+
+    async def delete_resolution_edges(
+        self,
+        project_name: str,
+        edge_types: List[str],
+    ) -> int:
+        return 0
 
 
 class Neo4jGraphStore:
@@ -365,6 +396,7 @@ class Neo4jGraphStore:
         limit: int,
         *,
         project_name: str,
+        relationship_types: Optional[List[str]] = None,
     ) -> GraphNeighborhoodResult:
         seed_ids = _chunk_graph_ids(chunk_ids)
         if not seed_ids:
@@ -373,12 +405,21 @@ class Neo4jGraphStore:
         depth = max(1, min(int(depth), settings.GRAPH_MAX_DEPTH))
         limit = max(1, int(limit))
         project_name = project_name.strip()
+        rel_filter = [r for r in (relationship_types or []) if r]
+        # Escape for Cypher: only allow A-Z0-9_ relationship type names
+        safe_rels = [r for r in rel_filter if re.fullmatch(r"[A-Z][A-Z0-9_]*", r)]
 
         driver = await self._get_driver()
+        if safe_rels:
+            rel_union = "|".join(safe_rels)
+            path_match = f"(seed)-[:{rel_union}*1..{depth}]-(neighbor:GraphNode)"
+        else:
+            path_match = f"(seed)-[*1..{depth}]-(neighbor:GraphNode)"
+
         query = f"""
         MATCH (seed:GraphNode:Chunk)
         WHERE seed.node_id IN $seed_ids AND seed.project_name = $project_name
-        MATCH path = (seed)-[*1..{depth}]-(neighbor:GraphNode)
+        MATCH path = {path_match}
         WHERE neighbor.project_name = $project_name
         WITH neighbor, path
         ORDER BY length(path)
@@ -508,6 +549,71 @@ class Neo4jGraphStore:
             node_ids=list(seeds),
             paths_summary=paths_summary[:20],
         )
+
+    async def list_nodes_by_types(
+        self,
+        project_name: str,
+        node_types: List[str],
+    ) -> List[Dict[str, Any]]:
+        types = [t for t in node_types if t]
+        if not types:
+            return []
+        project_name = project_name.strip()
+        driver = await self._get_driver()
+        query = """
+        MATCH (n:GraphNode)
+        WHERE n.project_name = $project_name AND n.node_type IN $node_types
+        OPTIONAL MATCH (d:GraphNode:Document {document_id: n.document_id, project_name: $project_name})
+        RETURN n.node_id AS node_id,
+               n.node_type AS node_type,
+               n.label AS label,
+               n.document_id AS document_id,
+               d.document_type AS document_type
+        """
+        rows: List[Dict[str, Any]] = []
+        async with driver.session(database=self._database) as session:
+            result = await session.run(
+                query,
+                project_name=project_name,
+                node_types=types,
+            )
+            async for record in result:
+                rows.append(
+                    {
+                        "node_id": record["node_id"],
+                        "node_type": record["node_type"],
+                        "label": record["label"] or "",
+                        "document_id": record["document_id"],
+                        "document_type": record["document_type"],
+                    }
+                )
+        return rows
+
+    async def delete_resolution_edges(
+        self,
+        project_name: str,
+        edge_types: List[str],
+    ) -> int:
+        """Delete project edges of given types that were written by the linker (link_method set)."""
+        safe = [t for t in edge_types if re.fullmatch(r"[A-Z][A-Z0-9_]*", t or "")]
+        if not safe:
+            return 0
+        project_name = project_name.strip()
+        driver = await self._get_driver()
+        deleted = 0
+        async with driver.session(database=self._database) as session:
+            for rel in safe:
+                query = f"""
+                MATCH (a:GraphNode {{project_name: $project_name}})-[r:{rel}]->(b:GraphNode {{project_name: $project_name}})
+                WHERE r.link_method IS NOT NULL
+                DELETE r
+                RETURN count(*) AS deleted
+                """
+                result = await session.run(query, project_name=project_name)
+                record = await result.single()
+                if record:
+                    deleted += int(record["deleted"])
+        return deleted
 
 
 async def get_graph_store() -> GraphStore:

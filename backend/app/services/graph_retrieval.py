@@ -263,6 +263,7 @@ async def _neighborhood_per_seed(
     depth: int,
     limit: int,
     project_name: str,
+    relationship_types: Optional[List[str]] = None,
 ) -> Any:
     """Expand each seed with a per-seed degree cap, then merge neighborhood results."""
     from app.services.graph_store import GraphNeighborhoodResult
@@ -280,6 +281,7 @@ async def _neighborhood_per_seed(
             depth=depth,
             limit=per_seed_limit,
             project_name=project_name,
+            relationship_types=relationship_types,
         )
         for cid in part.chunk_ids:
             if cid not in seen_chunks:
@@ -298,6 +300,19 @@ async def _neighborhood_per_seed(
         node_ids=merged_node_ids[:limit],
         paths_summary=merged_paths[:20],
     )
+
+
+def _cross_link_relationship_types() -> Optional[List[str]]:
+    """Bridge + whitelist when GRAPH_CROSS_LINK_ENABLED; else unrestricted (None)."""
+    if settings.GRAPH_CROSS_LINK_ENABLED is not True:
+        return None
+    # Need EXTRACTED_FROM / CONTAINS_CHUNK to hop chunk ↔ entity ↔ chunk across docs
+    bridge = {"EXTRACTED_FROM", "CONTAINS_CHUNK"}
+    raw = (settings.GRAPH_CROSS_LINK_EDGE_WHITELIST or "").strip()
+    if not isinstance(raw, str):
+        raw = ""
+    whitelist = {p.strip() for p in raw.split(",") if p.strip()}
+    return sorted(bridge | whitelist)
 
 
 async def _text_search_chunk_candidates(
@@ -397,9 +412,17 @@ async def augment_chunks_with_graph(
     seeds = _seed_chunk_ids(vector_chunks, project_name, seed_chunk_ids=seed_chunk_ids)
     budget = extra_budget if extra_budget is not None else settings.GRAPH_RETRIEVAL_EXTRA_BUDGET
     depth = depth if depth is not None else settings.GRAPH_NEIGHBORHOOD_DEFAULT_DEPTH
+    if (
+        settings.GRAPH_CROSS_LINK_ENABLED is True
+        and isinstance(depth, int)
+        and isinstance(settings.GRAPH_CROSS_LINK_MAX_DEPTH, int)
+        and depth == settings.GRAPH_NEIGHBORHOOD_DEFAULT_DEPTH
+    ):
+        depth = max(depth, settings.GRAPH_CROSS_LINK_MAX_DEPTH)
     limit = neighborhood_limit if neighborhood_limit is not None else settings.GRAPH_NEIGHBORHOOD_DEFAULT_LIMIT
     timeout = settings.GRAPH_QUERY_TIMEOUT_SECONDS
     pname = project_name.strip()
+    relationship_types = _cross_link_relationship_types()
 
     existing_ids: Set[str] = set()
     for c in vector_chunks:
@@ -450,6 +473,7 @@ async def augment_chunks_with_graph(
                     depth=depth,
                     limit=limit,
                     project_name=pname,
+                    relationship_types=relationship_types,
                 ),
                 timeout=timeout,
             )

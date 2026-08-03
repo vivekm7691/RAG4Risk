@@ -44,6 +44,8 @@ class NodeType(str, Enum):
     CHANGE_CONTROL = "ChangeControl"
     ROLE = "Role"
     ORGANIZATION = "Organization"
+    # Phase 5.2: project-scoped hub bridging SOW ↔ solution wording
+    SYSTEM_COMPONENT = "SystemComponent"
     # Deferred
     PERSON_OR_ROLE = "PersonOrRole"
 
@@ -81,6 +83,13 @@ class EdgeType(str, Enum):
     COVERS = "COVERS"
     MANAGED_VIA = "MANAGED_VIA"
     OUTLINES_OBJECTIVE_FOR = "OUTLINES_OBJECTIVE_FOR"
+    # Phase 5.2: cross-artifact (SOW ↔ solution)
+    DESCRIBES_CURRENT_STATE_OF = "DESCRIBES_CURRENT_STATE_OF"
+    IMPLEMENTS = "IMPLEMENTS"
+    ADDRESSES = "ADDRESSES"
+    TRACES_TO = "TRACES_TO"
+    GAPS = "GAPS"
+    SAME_AS = "SAME_AS"
     # Deferred
     SIMILAR_TO = "SIMILAR_TO"
     DUPLICATES = "DUPLICATES"
@@ -151,6 +160,36 @@ ALLOWED_EDGE_PAIRS: Dict[EdgeType, List[Tuple[NodeType, NodeType]]] = {
     EdgeType.COVERS: [(NodeType.STATEMENT_OF_WORK, NodeType.PROJECT)],
     EdgeType.MANAGED_VIA: [(NodeType.STATEMENT_OF_WORK, NodeType.CHANGE_CONTROL)],
     EdgeType.OUTLINES_OBJECTIVE_FOR: [(NodeType.STATEMENT_OF_WORK, NodeType.PROJECT)],
+    # Phase 5.2 cross-artifact
+    EdgeType.DESCRIBES_CURRENT_STATE_OF: [
+        (NodeType.ACTIVITY, NodeType.SYSTEM_COMPONENT),
+        (NodeType.REQUIREMENT, NodeType.SYSTEM_COMPONENT),
+    ],
+    EdgeType.IMPLEMENTS: [
+        (NodeType.ACTIVITY, NodeType.DELIVERABLE),
+        (NodeType.REQUIREMENT, NodeType.DELIVERABLE),
+    ],
+    EdgeType.ADDRESSES: [
+        (NodeType.RISK, NodeType.DELIVERABLE),
+        (NodeType.RISK, NodeType.MILESTONE),
+        (NodeType.CONTROL, NodeType.DELIVERABLE),
+        (NodeType.CONTROL, NodeType.MILESTONE),
+    ],
+    EdgeType.TRACES_TO: [(NodeType.REQUIREMENT, NodeType.REQUIREMENT)],
+    EdgeType.GAPS: [
+        (NodeType.RISK, NodeType.DELIVERABLE),
+        (NodeType.RISK, NodeType.REQUIREMENT),
+    ],
+    EdgeType.SAME_AS: [
+        (NodeType.DELIVERABLE, NodeType.SYSTEM_COMPONENT),
+        (NodeType.ACTIVITY, NodeType.SYSTEM_COMPONENT),
+        (NodeType.REQUIREMENT, NodeType.SYSTEM_COMPONENT),
+        (NodeType.PRODUCT, NodeType.SYSTEM_COMPONENT),
+        (NodeType.DELIVERABLE, NodeType.DELIVERABLE),
+        (NodeType.ACTIVITY, NodeType.ACTIVITY),
+        (NodeType.REQUIREMENT, NodeType.REQUIREMENT),
+        (NodeType.SYSTEM_COMPONENT, NodeType.SYSTEM_COMPONENT),
+    ],
 }
 
 # Back-compat: first pair per edge (deprecated for multi-pair types)
@@ -174,6 +213,7 @@ EXTRACTOR_SEMANTIC_NODE_TYPES: FrozenSet[NodeType] = frozenset(
         NodeType.CHANGE_CONTROL,
         NodeType.ROLE,
         NodeType.ORGANIZATION,
+        NodeType.SYSTEM_COMPONENT,
     }
 )
 
@@ -201,6 +241,7 @@ SEMANTIC_NODES_BY_DOCUMENT_TYPE: Dict[str, FrozenSet[NodeType]] = {
             NodeType.ASSUMPTION,
             NodeType.DELIVERABLE,
             NodeType.ACTIVITY,
+            NodeType.SYSTEM_COMPONENT,
         }
     ),
     "proposal document": frozenset(
@@ -229,6 +270,39 @@ SOW_EXTRACTABLE_EDGES: FrozenSet[EdgeType] = frozenset(
         EdgeType.EXTRACTED_FROM,
     }
 )
+
+# Phase 5.2: edges the solution-doc extractor may emit (within-doc only; no SOW IDs)
+SOLUTION_EXTRACTABLE_EDGES: FrozenSet[EdgeType] = frozenset(
+    {
+        EdgeType.EXTRACTED_FROM,
+        EdgeType.DESCRIBES,
+        EdgeType.DESCRIBES_CURRENT_STATE_OF,
+        EdgeType.GAPS,
+        EdgeType.MITIGATES,
+        EdgeType.REFERENCES,
+        EdgeType.RELATES_TO,
+        EdgeType.IMPLIES_ASSUMPTION,
+        EdgeType.PRODUCES,
+    }
+)
+
+# Cross-document edge types written by entity_linking_service (not per-chunk extract)
+CROSS_LINK_EDGE_TYPES: FrozenSet[EdgeType] = frozenset(
+    {
+        EdgeType.IMPLEMENTS,
+        EdgeType.ADDRESSES,
+        EdgeType.TRACES_TO,
+        EdgeType.SAME_AS,
+        EdgeType.DESCRIBES_CURRENT_STATE_OF,
+        EdgeType.GAPS,
+    }
+)
+
+CROSS_ARTIFACT_ONTOLOGY_VERSION = "0.3.0-cross-artifact"
+
+# Deliverable / milestone ID tokens shared across SOW and solution text
+DELIVERABLE_ID_RE = re.compile(r"\b([Dd]-\d+)\b")
+MILESTONE_ID_RE = re.compile(r"\b([Mm]-\d+)\b")
 
 
 def normalize_slug(label: str, max_len: int = 48) -> str:
@@ -260,6 +334,12 @@ def graph_id_customer(name: str) -> str:
 
 def graph_id_product(name: str) -> str:
     return f"product:{normalize_slug(name, 80)}"
+
+
+def graph_id_system_component(project_name: str, slug: str) -> str:
+    """Project-scoped SystemComponent hub: comp:{project_slug}:{component_slug}."""
+    proj = normalize_slug(project_name, 64)
+    return f"comp:{proj}:{normalize_slug(slug, 64)}"
 
 
 def graph_id_risk_row(document_id: str, row_number: int) -> str:
@@ -294,6 +374,7 @@ SEMANTIC_ID_PREFIX: Dict[NodeType, str] = {
     NodeType.CHANGE_CONTROL: "cc",
     NodeType.ROLE: "role",
     NodeType.ORGANIZATION: "org",
+    NodeType.SYSTEM_COMPONENT: "comp",
 }
 
 
@@ -315,7 +396,10 @@ def validate_edge_endpoints(
         return False
 
     if edge_type == EdgeType.EXTRACTED_FROM:
-        return source_type in EXTRACTOR_SEMANTIC_NODE_TYPES and target_type == NodeType.CHUNK
+        return (
+            source_type in EXTRACTOR_SEMANTIC_NODE_TYPES
+            or source_type == NodeType.SYSTEM_COMPONENT
+        ) and target_type == NodeType.CHUNK
 
     src = source_type
     if src == NodeType.DOCUMENT and any(p[0] == NodeType.STATEMENT_OF_WORK for p in pairs):
@@ -415,5 +499,5 @@ def filter_extraction_by_confidence(
 class GraphOntologyVersion(BaseModel):
     """Version stamp written with graph data for migrations."""
 
-    version: str = "0.2.0-enterprise-sow"
-    notes: str = "Phase 0 + enterprise SOW/delivery relationships"
+    version: str = "0.3.0-cross-artifact"
+    notes: str = "Phase 5.2 SystemComponent hubs and SOW↔solution cross-doc edges"
